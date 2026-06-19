@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    database_url: str = "postgresql+asyncpg://kps:kps@localhost:5432/knowledge_product_studio"
+    redis_url: str = "redis://localhost:6379/0"
+    opensearch_url: str = "http://localhost:9200"
+
+    llm_provider: str = "anthropic"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+
+    confluence_base_url: str = ""
+    confluence_api_token: str = ""
+    confluence_user_email: str = ""
+
+    oidc_issuer_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    jwt_secret: str = "change-me"
+
+    otel_exporter_otlp_endpoint: str = ""
+
+
+settings = Settings()

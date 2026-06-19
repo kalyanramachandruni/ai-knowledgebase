@@ -1,0 +1,42 @@
+[project]
+name = "knowledge-product-studio-api"
+version = "0.1.0"
+description = "Knowledge Product Studio backend — FastAPI / DDD / Clean Architecture"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "redis>=5.1",
+    "opensearch-py>=2.7",
+    "httpx>=0.27",
+    "PyYAML>=6.0",
+    "python-jose[cryptography]>=3.3",
+    "anthropic>=0.39",
+    "openai>=1.54",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-exporter-otlp>=1.27",
+    "prometheus-client>=0.21",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true

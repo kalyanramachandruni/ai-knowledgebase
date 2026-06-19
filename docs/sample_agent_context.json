@@ -1,0 +1,21 @@
+{
+  "capability": "shipment_creation",
+  "version": "1.0.0",
+  "process": [
+    "Validate Address",
+    "Select Carrier",
+    "Generate Label"
+  ],
+  "rules": [
+    { "condition": "weight > 30kg", "action": "use freight" }
+  ],
+  "policies": [
+    { "condition": "shipment_value > 1000", "action": "manager approval" }
+  ],
+  "sla": { "target": "2h" },
+  "escalations": [
+    { "after": "90m", "escalate_to": "Logistics Manager" }
+  ],
+  "roles": ["Logistics Coordinator"],
+  "tools": ["sap_create_shipment"]
+}

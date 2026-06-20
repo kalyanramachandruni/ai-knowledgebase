@@ -15,6 +15,8 @@ class ConfluenceSpaceRepository(Protocol):
 
 
 class ConfluencePageRepository(Protocol):
+    async def get_by_id(self, page_id: uuid.UUID) -> ConfluencePage | None: ...
+
     async def get_by_confluence_id(
         self, space_id: uuid.UUID, confluence_page_id: str
     ) -> ConfluencePage | None: ...

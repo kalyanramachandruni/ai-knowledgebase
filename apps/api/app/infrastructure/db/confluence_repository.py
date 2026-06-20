@@ -71,6 +71,17 @@ class SqlAlchemyConfluencePageRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def get_by_id(self, page_id: uuid.UUID) -> ConfluencePage | None:
+        row = await self._session.get(ConfluencePageModel, page_id)
+        if row is None:
+            return None
+        attachments = (
+            (await self._session.execute(select(ConfluenceAttachment).where(ConfluenceAttachment.page_id == row.id)))
+            .scalars()
+            .all()
+        )
+        return _page_to_domain(row, list(attachments))
+
     async def get_by_confluence_id(self, space_id: uuid.UUID, confluence_page_id: str) -> ConfluencePage | None:
         row = (
             await self._session.execute(

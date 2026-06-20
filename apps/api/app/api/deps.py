@@ -6,6 +6,8 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.confluence.use_cases import SyncConfluenceSpaceUseCase
+from app.application.context_package.generator import ContextPackageGenerator
+from app.application.context_package.use_cases import GetContextPackageUseCase
 from app.application.extraction.compiler import CompileFromExtractionUseCase
 from app.application.extraction.use_cases import ExtractKnowledgeFromPageUseCase
 from app.application.knowledge_product.use_cases import (
@@ -18,6 +20,8 @@ from app.application.knowledge_product.use_cases import (
 )
 from app.core.config import settings
 from app.domain.extraction.ports import LLMExtractionPort
+from app.infrastructure.cache.client import redis_client
+from app.infrastructure.cache.redis_cache import RedisContextPackageCache
 from app.infrastructure.confluence.client import ConfluenceApiClient
 from app.infrastructure.db.audit import SqlAlchemyAuditLog
 from app.infrastructure.db.confluence_repository import (
@@ -133,3 +137,19 @@ def get_compile_from_extraction_use_case(
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
 ) -> CompileFromExtractionUseCase:
     return CompileFromExtractionUseCase(extraction_repository, repository, create_use_case, compile_use_case)
+
+
+def get_context_package_cache() -> RedisContextPackageCache:
+    return RedisContextPackageCache(redis_client)
+
+
+def get_context_package_generator() -> ContextPackageGenerator:
+    return ContextPackageGenerator()
+
+
+def get_context_package_use_case(
+    repository: RepositoryDep,
+    cache: Annotated[RedisContextPackageCache, Depends(get_context_package_cache)],
+    generator: Annotated[ContextPackageGenerator, Depends(get_context_package_generator)],
+) -> GetContextPackageUseCase:
+    return GetContextPackageUseCase(repository, cache, generator)

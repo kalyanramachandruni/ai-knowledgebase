@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 
 from app.api.deps import (
     get_compare_use_case,
     get_compile_use_case,
+    get_context_package_use_case,
     get_create_use_case,
     get_get_use_case,
     get_list_use_case,
@@ -23,13 +26,19 @@ from app.api.v1.schemas import (
     UpdateKnowledgeProductRequest,
     VersionDiffResponse,
 )
+from app.application.context_package.use_cases import GetContextPackageUseCase
 from app.application.knowledge_product.dto import (
     CompileKnowledgeProductInput,
     CreateKnowledgeProductInput,
     EscalationInput,
     RuleInput,
 )
-from app.application.knowledge_product.exceptions import KnowledgeProductAlreadyExists, KnowledgeProductNotFound
+from app.application.knowledge_product.exceptions import (
+    KnowledgeProductAlreadyExists,
+    KnowledgeProductNotFound,
+    KnowledgeProductVersionNotFound,
+    KnowledgeProductVersionNotPublished,
+)
 from app.application.knowledge_product.use_cases import (
     CompareVersionsUseCase,
     CompileNewVersionUseCase,
@@ -99,6 +108,27 @@ async def get_knowledge_product(
     except KnowledgeProductNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return KnowledgeProductResponse.from_domain(product)
+
+
+@router.get("/{product_id}/context")
+async def get_context_package(
+    product_id: uuid.UUID,
+    use_case: Annotated[GetContextPackageUseCase, Depends(get_context_package_use_case)],
+    version_id: uuid.UUID | None = Query(default=None),
+    format: Literal["json", "yaml"] = Query(default="json"),
+):
+    try:
+        package = await use_case.execute(product_id, version_id)
+    except KnowledgeProductNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KnowledgeProductVersionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KnowledgeProductVersionNotPublished as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if format == "yaml":
+        return Response(content=yaml.dump(package, sort_keys=False), media_type="application/x-yaml")
+    return package
 
 
 @router.get("/{product_id}/versions", response_model=list[KnowledgeProductVersionResponse])

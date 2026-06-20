@@ -12,3 +12,11 @@ class KnowledgeProductNotFound(ApplicationError):
 
 class KnowledgeProductAlreadyExists(ApplicationError):
     pass
+
+
+class KnowledgeProductVersionNotFound(ApplicationError):
+    pass
+
+
+class KnowledgeProductVersionNotPublished(ApplicationError):
+    pass

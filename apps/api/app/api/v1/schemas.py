@@ -4,6 +4,8 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from app.domain.governance.entities import ApprovalRequest
+from app.domain.governance.value_objects import ApprovalDecision
 from app.domain.knowledge_product.entities import KnowledgeProduct, KnowledgeProductVersion
 from app.domain.knowledge_product.value_objects import VersionBump
 
@@ -110,3 +112,28 @@ class KnowledgeProductSummaryResponse(BaseModel):
 
 class VersionDiffResponse(BaseModel):
     diff: dict
+
+
+class DecideApprovalRequest(BaseModel):
+    decision: ApprovalDecision
+    comment: str | None = None
+
+
+class ApprovalRequestResponse(BaseModel):
+    id: uuid.UUID
+    version_id: uuid.UUID
+    requested_by: uuid.UUID
+    reviewer_id: uuid.UUID | None
+    decision: str
+    comment: str | None
+
+    @classmethod
+    def from_domain(cls, request: ApprovalRequest) -> "ApprovalRequestResponse":
+        return cls(
+            id=request.id,
+            version_id=request.version_id,
+            requested_by=request.requested_by,
+            reviewer_id=request.reviewer_id,
+            decision=request.decision.value,
+            comment=request.comment,
+        )

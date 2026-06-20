@@ -63,6 +63,7 @@ class SqlAlchemyConfluenceSpaceRepository:
         if row is not None:
             row.last_synced_at = utc_now()
             await self._session.flush()
+            await self._session.commit()
 
 
 class SqlAlchemyConfluencePageRepository:

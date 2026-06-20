@@ -12,13 +12,17 @@ from app.api.deps import (
     get_compile_use_case,
     get_context_package_use_case,
     get_create_use_case,
+    get_decide_approval_use_case,
     get_get_use_case,
     get_list_use_case,
+    get_submit_for_review_use_case,
     get_transition_use_case,
 )
 from app.api.v1.schemas import (
+    ApprovalRequestResponse,
     CompileRequest,
     CreateKnowledgeProductRequest,
+    DecideApprovalRequest,
     KnowledgeProductResponse,
     KnowledgeProductSummaryResponse,
     KnowledgeProductVersionResponse,
@@ -27,6 +31,8 @@ from app.api.v1.schemas import (
     VersionDiffResponse,
 )
 from app.application.context_package.use_cases import GetContextPackageUseCase
+from app.application.governance.exceptions import ApprovalRequestNotFound, NoPendingApprovalRequest
+from app.application.governance.use_cases import DecideApprovalUseCase, SubmitForReviewUseCase
 from app.application.knowledge_product.dto import (
     CompileKnowledgeProductInput,
     CreateKnowledgeProductInput,
@@ -47,9 +53,14 @@ from app.application.knowledge_product.use_cases import (
     ListKnowledgeProductsUseCase,
     TransitionStatusUseCase,
 )
+from app.core.security import CurrentUser, get_current_user, require_roles
+from app.domain.governance.value_objects import Role
 from app.domain.knowledge_product.value_objects import KnowledgeProductStatus
 
 router = APIRouter(prefix="/knowledge-products", tags=["knowledge-products"])
+
+_OWNER_OR_ADMIN = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN)
+_REVIEWER_OR_ADMIN = require_roles(Role.REVIEWER, Role.ADMIN)
 
 
 def _to_compile_input(compile_request: CompileRequest, source_extraction_run_id: uuid.UUID | None = None) -> CompileKnowledgeProductInput:
@@ -70,6 +81,7 @@ def _to_compile_input(compile_request: CompileRequest, source_extraction_run_id:
 @router.get("", response_model=list[KnowledgeProductSummaryResponse])
 async def list_knowledge_products(
     use_case: Annotated[ListKnowledgeProductsUseCase, Depends(get_list_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
     status: str | None = Query(default=None),
     search: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
@@ -83,6 +95,7 @@ async def list_knowledge_products(
 async def create_knowledge_product(
     payload: CreateKnowledgeProductRequest,
     use_case: Annotated[CreateKnowledgeProductUseCase, Depends(get_create_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
     try:
         product = await use_case.execute(
@@ -102,6 +115,7 @@ async def create_knowledge_product(
 async def get_knowledge_product(
     product_id: uuid.UUID,
     use_case: Annotated[GetKnowledgeProductUseCase, Depends(get_get_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> KnowledgeProductResponse:
     try:
         product = await use_case.execute(product_id)
@@ -114,6 +128,7 @@ async def get_knowledge_product(
 async def get_context_package(
     product_id: uuid.UUID,
     use_case: Annotated[GetContextPackageUseCase, Depends(get_context_package_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
     version_id: uuid.UUID | None = Query(default=None),
     format: Literal["json", "yaml"] = Query(default="json"),
 ):
@@ -135,6 +150,7 @@ async def get_context_package(
 async def list_versions(
     product_id: uuid.UUID,
     use_case: Annotated[GetKnowledgeProductUseCase, Depends(get_get_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> list[KnowledgeProductVersionResponse]:
     try:
         product = await use_case.execute(product_id)
@@ -149,6 +165,7 @@ async def update_knowledge_product(
     payload: UpdateKnowledgeProductRequest,
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
     get_use_case: Annotated[GetKnowledgeProductUseCase, Depends(get_get_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
     try:
         await compile_use_case.execute(product_id, _to_compile_input(payload.compile))
@@ -163,19 +180,35 @@ async def submit_for_review(
     product_id: uuid.UUID,
     version_id: uuid.UUID,
     payload: TransitionRequest,
-    use_case: Annotated[TransitionStatusUseCase, Depends(get_transition_use_case)],
+    use_case: Annotated[SubmitForReviewUseCase, Depends(get_submit_for_review_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
-    return await _transition(use_case, product_id, version_id, KnowledgeProductStatus.REVIEW, payload.actor_id)
+    try:
+        product, _request = await use_case.execute(product_id, version_id, payload.actor_id)
+    except KnowledgeProductNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # domain.DomainError on illegal transition
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return KnowledgeProductResponse.from_domain(product)
 
 
-@router.post("/{product_id}/versions/{version_id}/approve", response_model=KnowledgeProductResponse)
-async def approve(
+@router.post("/{product_id}/approval-requests/{request_id}/decide", response_model=ApprovalRequestResponse)
+async def decide_approval(
     product_id: uuid.UUID,
-    version_id: uuid.UUID,
-    payload: TransitionRequest,
-    use_case: Annotated[TransitionStatusUseCase, Depends(get_transition_use_case)],
-) -> KnowledgeProductResponse:
-    return await _transition(use_case, product_id, version_id, KnowledgeProductStatus.APPROVED, payload.actor_id)
+    request_id: uuid.UUID,
+    payload: DecideApprovalRequest,
+    use_case: Annotated[DecideApprovalUseCase, Depends(get_decide_approval_use_case)],
+    current_user: Annotated[CurrentUser, Depends(_REVIEWER_OR_ADMIN)],
+) -> ApprovalRequestResponse:
+    try:
+        _product, request = await use_case.execute(
+            product_id, request_id, current_user.user_id, payload.decision, payload.comment
+        )
+    except ApprovalRequestNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (NoPendingApprovalRequest, KnowledgeProductNotFound) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ApprovalRequestResponse.from_domain(request)
 
 
 @router.post("/{product_id}/versions/{version_id}/publish", response_model=KnowledgeProductResponse)
@@ -184,6 +217,7 @@ async def publish(
     version_id: uuid.UUID,
     payload: TransitionRequest,
     use_case: Annotated[TransitionStatusUseCase, Depends(get_transition_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
     return await _transition(use_case, product_id, version_id, KnowledgeProductStatus.PUBLISHED, payload.actor_id)
 
@@ -194,6 +228,7 @@ async def retire(
     version_id: uuid.UUID,
     payload: TransitionRequest,
     use_case: Annotated[TransitionStatusUseCase, Depends(get_transition_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
     return await _transition(use_case, product_id, version_id, KnowledgeProductStatus.RETIRED, payload.actor_id)
 
@@ -220,6 +255,7 @@ async def compare_versions(
     from_version_id: uuid.UUID,
     to_version_id: uuid.UUID,
     use_case: Annotated[CompareVersionsUseCase, Depends(get_compare_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> VersionDiffResponse:
     try:
         diff = await use_case.execute(product_id, from_version_id, to_version_id)

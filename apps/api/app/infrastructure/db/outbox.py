@@ -36,3 +36,4 @@ class SqlAlchemyEventOutbox:
             )
         )
         await self._session.flush()
+        await self._session.commit()

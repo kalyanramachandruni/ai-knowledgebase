@@ -15,14 +15,19 @@ from app.application.extraction.exceptions import (
     ExtractionRunNotSucceeded,
 )
 from app.application.extraction.use_cases import ExtractKnowledgeFromPageUseCase
+from app.core.security import CurrentUser, require_roles
+from app.domain.governance.value_objects import Role
 
 router = APIRouter(tags=["extraction"])
+
+_OWNER_OR_ADMIN = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN)
 
 
 @router.post("/confluence/pages/{page_id}/extract", response_model=ExtractionRunResponse)
 async def extract_page(
     page_id: uuid.UUID,
     use_case: Annotated[ExtractKnowledgeFromPageUseCase, Depends(get_extract_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> ExtractionRunResponse:
     try:
         run = await use_case.execute(page_id)
@@ -44,6 +49,7 @@ async def compile_from_extraction(
     run_id: uuid.UUID,
     payload: CompileFromExtractionRequest,
     use_case: Annotated[CompileFromExtractionUseCase, Depends(get_compile_from_extraction_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
     try:
         product = await use_case.execute(

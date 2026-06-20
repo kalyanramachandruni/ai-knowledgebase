@@ -10,6 +10,7 @@ from app.application.context_package.generator import ContextPackageGenerator
 from app.application.context_package.use_cases import GetContextPackageUseCase
 from app.application.extraction.compiler import CompileFromExtractionUseCase
 from app.application.extraction.use_cases import ExtractKnowledgeFromPageUseCase
+from app.application.governance.use_cases import DecideApprovalUseCase, SubmitForReviewUseCase
 from app.application.knowledge_product.use_cases import (
     CompareVersionsUseCase,
     CompileNewVersionUseCase,
@@ -29,6 +30,7 @@ from app.infrastructure.db.confluence_repository import (
     SqlAlchemyConfluenceSpaceRepository,
 )
 from app.infrastructure.db.extraction_repository import SqlAlchemyExtractionRunRepository
+from app.infrastructure.db.governance_repository import SqlAlchemyApprovalRequestRepository
 from app.infrastructure.db.outbox import SqlAlchemyEventOutbox
 from app.infrastructure.db.repository import SqlAlchemyKnowledgeProductRepository
 from app.infrastructure.db.session import get_session
@@ -153,3 +155,28 @@ def get_context_package_use_case(
     generator: Annotated[ContextPackageGenerator, Depends(get_context_package_generator)],
 ) -> GetContextPackageUseCase:
     return GetContextPackageUseCase(repository, cache, generator)
+
+
+def get_approval_repository(session: SessionDep) -> SqlAlchemyApprovalRequestRepository:
+    return SqlAlchemyApprovalRequestRepository(session)
+
+
+ApprovalRepositoryDep = Annotated[SqlAlchemyApprovalRequestRepository, Depends(get_approval_repository)]
+
+
+def get_submit_for_review_use_case(
+    repository: RepositoryDep,
+    approval_repository: ApprovalRepositoryDep,
+    audit: AuditDep,
+    outbox: Annotated[SqlAlchemyEventOutbox, Depends(get_event_outbox)],
+) -> SubmitForReviewUseCase:
+    return SubmitForReviewUseCase(repository, approval_repository, audit, outbox)
+
+
+def get_decide_approval_use_case(
+    repository: RepositoryDep,
+    approval_repository: ApprovalRepositoryDep,
+    audit: AuditDep,
+    outbox: Annotated[SqlAlchemyEventOutbox, Depends(get_event_outbox)],
+) -> DecideApprovalUseCase:
+    return DecideApprovalUseCase(repository, approval_repository, audit, outbox)

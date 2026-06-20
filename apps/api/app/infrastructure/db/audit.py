@@ -32,3 +32,4 @@ class SqlAlchemyAuditLog:
             )
         )
         await self._session.flush()
+        await self._session.commit()

@@ -1,0 +1,53 @@
+# Runs docs/db_schema.sql against postgres once per deploy. Create the
+# ConfigMap from the actual schema file (kept as a single source of truth
+# in docs/, not duplicated into this YAML) before applying this Job —
+# `kubectl create`, unlike kustomize's configMapGenerator, has no
+# restriction against reading files outside the current directory:
+#
+#   kubectl create configmap db-schema -n knowledge-product-studio \
+#     --from-file=schema.sql=docs/db_schema.sql \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl delete job db-migrate -n knowledge-product-studio --ignore-not-found
+#   kubectl apply -f k8s/11-migration-job.yaml
+#
+# CREATE TABLE statements in db_schema.sql aren't idempotent; re-running
+# against an already-migrated database will fail loudly rather than
+# silently drift. Swap this for Alembic-based migrations before this needs
+# to run more than once against the same database.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: knowledge-product-studio
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: postgres:16
+          command:
+            - psql
+            - "-h"
+            - postgres
+            - "-U"
+            - "$(POSTGRES_USER)"
+            - "-d"
+            - knowledge_product_studio
+            - "-f"
+            - /schema/schema.sql
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: kps-secrets, key: POSTGRES_USER }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: kps-secrets, key: POSTGRES_PASSWORD }
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+      volumes:
+        - name: schema
+          configMap:
+            name: db-schema
+  backoffLimit: 0

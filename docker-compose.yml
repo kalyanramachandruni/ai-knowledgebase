@@ -22,6 +22,10 @@ services:
       - discovery.type=single-node
       - plugins.security.disabled=true
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      # Required since OpenSearch 2.12 even with the security plugin disabled —
+      # the demo-config installer refuses to start without it. Local dev only;
+      # never reuse this value anywhere real auth matters.
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=ChangeMe_Local123!
     ports:
       - "9200:9200"
 
@@ -46,6 +50,36 @@ services:
       - "3000:3000"
     volumes:
       - ./apps/web:/app
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317" # OTLP gRPC, matches OTEL_EXPORTER_OTLP_ENDPOINT in .env.example
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    ports:
+      - "3001:3000" # 3000 is taken by web
+    depends_on:
+      - prometheus
 
 volumes:
   pgdata:

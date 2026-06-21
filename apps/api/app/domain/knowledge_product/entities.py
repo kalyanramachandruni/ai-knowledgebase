@@ -22,7 +22,7 @@ from app.domain.knowledge_product.value_objects import (
     VersionBump,
     assert_legal_transition,
 )
-from app.domain.shared.base import AggregateRoot, DomainError, new_id, utc_now
+from app.domain.shared.base import AggregateRoot, DomainError, new_id
 
 
 @dataclass

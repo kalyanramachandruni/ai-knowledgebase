@@ -1,0 +1,17 @@
+# Non-secret configuration. Secrets (API keys, tokens, JWT_SECRET) live in
+# 02-secret.yaml instead — never put credentials in a ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kps-config
+  namespace: knowledge-product-studio
+data:
+  DATABASE_URL: "postgresql+asyncpg://kps:kps@postgres:5432/knowledge_product_studio"
+  REDIS_URL: "redis://redis:6379/0"
+  OPENSEARCH_URL: "http://opensearch:9200"
+  LLM_PROVIDER: "anthropic"
+  ANTHROPIC_MODEL: "claude-sonnet-4-6"
+  OPENAI_MODEL: "gpt-4o"
+  ENABLE_DEV_LOGIN: "false"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  NEXT_PUBLIC_API_BASE_URL: "https://api.knowledge-product-studio.example.com/api/v1"

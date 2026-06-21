@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException
 
 from app.api.deps import SessionDep
 from app.api.v1.auth_schemas import DevTokenRequest, DevTokenResponse

@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api-lint-test:
+    name: API — lint, type-check, test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kps
+          POSTGRES_PASSWORD: kps
+          POSTGRES_DB: knowledge_product_studio
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kps"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Load schema into postgres
+        run: |
+          sudo apt-get install -y postgresql-client
+          PGPASSWORD=kps psql -h localhost -U kps -d knowledge_product_studio -f ../../docs/db_schema.sql
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check app
+
+      - name: Mypy type-check
+        run: mypy app
+        continue-on-error: true # surfaces type issues without blocking — tighten once the codebase is mypy-clean
+
+      - name: Pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://kps:kps@localhost:5432/knowledge_product_studio
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest -v
+
+  web-lint-build:
+    name: Web — lint, type-check, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  k8s-manifests:
+    name: Validate Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: kubectl kustomize build
+        run: kubectl kustomize k8s/ > /dev/null

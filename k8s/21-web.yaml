@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: knowledge-product-studio
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          # NEXT_PUBLIC_API_BASE_URL is baked in at image build time (see
+          # apps/web/Dockerfile) — rebuild and re-push the image if it changes,
+          # setting it here as an env var has no effect on already-built pages.
+          image: ghcr.io/your-org/knowledge-product-studio-web:latest
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /login, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: knowledge-product-studio
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 3000
+      targetPort: 3000

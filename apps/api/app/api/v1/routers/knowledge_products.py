@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from app.api.deps import (
+    ApprovalRepositoryDep,
     get_compare_use_case,
     get_compile_use_case,
     get_context_package_use_case,
@@ -190,6 +191,17 @@ async def submit_for_review(
     except Exception as exc:  # domain.DomainError on illegal transition
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return KnowledgeProductResponse.from_domain(product)
+
+
+@router.get("/{product_id}/versions/{version_id}/pending-approval", response_model=ApprovalRequestResponse | None)
+async def get_pending_approval(
+    product_id: uuid.UUID,  # noqa: ARG001 - kept for URL symmetry / future ownership checks
+    version_id: uuid.UUID,
+    approval_repository: ApprovalRepositoryDep,
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
+) -> ApprovalRequestResponse | None:
+    request = await approval_repository.get_pending_for_version(version_id)
+    return ApprovalRequestResponse.from_domain(request) if request else None
 
 
 @router.post("/{product_id}/approval-requests/{request_id}/decide", response_model=ApprovalRequestResponse)

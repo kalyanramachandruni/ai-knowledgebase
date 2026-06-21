@@ -27,5 +27,10 @@ class Settings(BaseSettings):
 
     otel_exporter_otlp_endpoint: str = ""
 
+    # Issues JWTs for any user_id/roles with no credential check. Lets the
+    # frontend and local testing authenticate without a real OIDC IdP wired
+    # up. Must be false in any environment reachable by untrusted users.
+    enable_dev_login: bool = True
+
 
 settings = Settings()

@@ -89,4 +89,15 @@ export const api = {
 
   createProduct: (payload: Record<string, unknown>) =>
     request<KnowledgeProduct>("/knowledge-products", { method: "POST", body: JSON.stringify(payload) }),
+
+  syncConfluenceSpace: (spaceKey: string, spaceName: string, baseUrl: string) =>
+    request<{
+      space_key: string;
+      pages_created: number;
+      pages_updated: number;
+      pages_skipped_unchanged: number;
+    }>("/confluence/spaces/sync", {
+      method: "POST",
+      body: JSON.stringify({ space_key: spaceKey, space_name: spaceName, base_url: baseUrl }),
+    }),
 };

@@ -5,7 +5,6 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.confluence.use_cases import SyncConfluenceSpaceUseCase
 from app.application.context_package.generator import ContextPackageGenerator
 from app.application.context_package.use_cases import GetContextPackageUseCase
 from app.application.extraction.compiler import CompileFromExtractionUseCase
@@ -75,9 +74,13 @@ def get_compare_use_case(repository: RepositoryDep) -> CompareVersionsUseCase:
     return CompareVersionsUseCase(repository)
 
 
-def get_confluence_client() -> ConfluenceApiClient:
+def build_confluence_client(base_url: str) -> ConfluenceApiClient:
+    """Not a FastAPI dependency — base_url comes from the request body
+    (the space being connected), not server-wide settings, so callers
+    construct this themselves after reading the request. Only the
+    credentials (token/email) are server-side configuration."""
     return ConfluenceApiClient(
-        base_url=settings.confluence_base_url,
+        base_url=base_url,
         user_email=settings.confluence_user_email,
         api_token=settings.confluence_api_token,
     )
@@ -95,13 +98,13 @@ def get_event_outbox(session: SessionDep) -> SqlAlchemyEventOutbox:
     return SqlAlchemyEventOutbox(session)
 
 
-def get_sync_confluence_space_use_case(
-    client: Annotated[ConfluenceApiClient, Depends(get_confluence_client)],
-    space_repository: Annotated[SqlAlchemyConfluenceSpaceRepository, Depends(get_confluence_space_repository)],
-    page_repository: Annotated[SqlAlchemyConfluencePageRepository, Depends(get_confluence_page_repository)],
-    outbox: Annotated[SqlAlchemyEventOutbox, Depends(get_event_outbox)],
-) -> SyncConfluenceSpaceUseCase:
-    return SyncConfluenceSpaceUseCase(client, space_repository, page_repository, outbox)
+ConfluenceSpaceRepositoryDep = Annotated[
+    SqlAlchemyConfluenceSpaceRepository, Depends(get_confluence_space_repository)
+]
+ConfluencePageRepositoryDep = Annotated[
+    SqlAlchemyConfluencePageRepository, Depends(get_confluence_page_repository)
+]
+EventOutboxDep = Annotated[SqlAlchemyEventOutbox, Depends(get_event_outbox)]
 
 
 def get_llm_port() -> LLMExtractionPort:

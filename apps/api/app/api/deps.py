@@ -78,10 +78,9 @@ def build_confluence_client(base_url: str) -> ConfluenceApiClient:
     """Not a FastAPI dependency — base_url comes from the request body
     (the space being connected), not server-wide settings, so callers
     construct this themselves after reading the request. Only the
-    credentials (token/email) are server-side configuration."""
+    credential (the OAuth2 Bearer access token) is server-side configuration."""
     return ConfluenceApiClient(
         base_url=base_url,
-        user_email=settings.confluence_user_email,
         api_token=settings.confluence_api_token,
     )
 

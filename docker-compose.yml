@@ -48,8 +48,6 @@ services:
       - api
     ports:
       - "3000:3000"
-    volumes:
-      - ./apps/web:/app
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.111.0

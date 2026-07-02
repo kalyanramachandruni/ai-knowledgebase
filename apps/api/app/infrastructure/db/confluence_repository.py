@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.confluence.entities import ConfluencePage, ConfluenceSpace
@@ -102,17 +103,11 @@ class SqlAlchemyConfluencePageRepository:
         return _page_to_domain(row, list(attachments))
 
     async def upsert(self, page: ConfluencePage) -> ConfluencePage:
-        row = (
-            await self._session.execute(
-                select(ConfluencePageModel).where(
-                    ConfluencePageModel.space_id == page.space_id,
-                    ConfluencePageModel.confluence_page_id == page.confluence_page_id,
-                )
-            )
-        ).scalar_one_or_none()
-
-        if row is None:
-            row = ConfluencePageModel(
+        # Atomic INSERT ... ON CONFLICT DO UPDATE avoids the SELECT-then-insert
+        # race that caused UniqueViolationError on re-sync of the same space.
+        stmt = (
+            pg_insert(ConfluencePageModel)
+            .values(
                 id=page.id,
                 space_id=page.space_id,
                 confluence_page_id=page.confluence_page_id,
@@ -122,18 +117,23 @@ class SqlAlchemyConfluencePageRepository:
                 confluence_version=page.confluence_version,
                 last_modified_at=page.last_modified_at,
             )
-            self._session.add(row)
-        else:
-            row.title = page.title
-            row.body_storage_format = page.body_storage_format
-            row.labels = page.labels
-            row.confluence_version = page.confluence_version
-            row.last_modified_at = page.last_modified_at
-
-        await self._session.flush()
+            .on_conflict_do_update(
+                constraint="confluence_page_space_id_confluence_page_id_key",
+                set_={
+                    "title": page.title,
+                    "body_storage_format": page.body_storage_format,
+                    "labels": page.labels,
+                    "confluence_version": page.confluence_version,
+                    "last_modified_at": page.last_modified_at,
+                },
+            )
+            .returning(ConfluencePageModel.id)
+        )
+        result = await self._session.execute(stmt)
+        row_id: uuid.UUID = result.scalar_one()
 
         existing_attachments = (
-            (await self._session.execute(select(ConfluenceAttachment).where(ConfluenceAttachment.page_id == row.id)))
+            (await self._session.execute(select(ConfluenceAttachment).where(ConfluenceAttachment.page_id == row_id)))
             .scalars()
             .all()
         )
@@ -144,7 +144,7 @@ class SqlAlchemyConfluencePageRepository:
         for attachment in page.attachments:
             self._session.add(
                 ConfluenceAttachment(
-                    page_id=row.id,
+                    page_id=row_id,
                     file_name=attachment.file_name,
                     media_type=attachment.media_type,
                     download_url=attachment.download_url,

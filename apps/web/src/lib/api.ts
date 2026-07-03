@@ -100,4 +100,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ space_key: spaceKey, space_name: spaceName, base_url: baseUrl }),
     }),
+
+  listConfluencePages: (spaceKey?: string) => {
+    const qs = spaceKey ? `?space_key=${encodeURIComponent(spaceKey)}` : "";
+    return request<import("@/lib/types").ConfluencePage[]>(`/confluence/pages${qs}`);
+  },
+
+  extractPage: (pageId: string) =>
+    request<import("@/lib/types").ExtractionRun>(`/confluence/pages/${pageId}/extract`, {
+      method: "POST",
+    }),
+
+  compileExtraction: (runId: string, payload: {
+    product_key: string;
+    name: string;
+    owner: string;
+    created_by: string;
+  }) =>
+    request<import("@/lib/types").KnowledgeProduct>(`/extraction-runs/${runId}/compile`, {
+      method: "POST",
+      body: JSON.stringify({ ...payload, bump: "minor" }),
+    }),
 };

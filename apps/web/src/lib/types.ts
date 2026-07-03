@@ -60,3 +60,22 @@ export interface ApprovalRequest {
   decision: "pending" | "approved" | "rejected";
   comment: string | null;
 }
+
+export interface ConfluencePage {
+  id: string;
+  space_id: string;
+  confluence_page_id: string;
+  title: string;
+  confluence_version: number;
+  last_modified_at: string;
+}
+
+export interface ExtractionRun {
+  id: string;
+  page_id: string;
+  status: "running" | "succeeded" | "failed";
+  llm_provider: string;
+  llm_model: string;
+  structured_draft: Record<string, unknown> | null;
+  error_message: string | null;
+}

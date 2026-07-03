@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -14,3 +17,12 @@ class SyncSpaceResponse(BaseModel):
     pages_created: int
     pages_updated: int
     pages_skipped_unchanged: int
+
+
+class ConfluencePageResponse(BaseModel):
+    id: uuid.UUID
+    space_id: uuid.UUID
+    confluence_page_id: str
+    title: str
+    confluence_version: int
+    last_modified_at: datetime

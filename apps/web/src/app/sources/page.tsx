@@ -195,11 +195,13 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     p.title.toLowerCase().includes(search.toLowerCase())
   ) ?? [];
 
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
   if (!pages) return <p className="text-sm text-gray-500">Loading pages...</p>;
 
   return (
     <>
+      {error && (
+        <p className="mb-3 text-sm text-red-600">{error}</p>
+      )}
       <div className="mb-4 flex items-center gap-3">
         <input
           value={search}

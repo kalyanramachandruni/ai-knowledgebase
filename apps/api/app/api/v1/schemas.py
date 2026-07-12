@@ -13,21 +13,50 @@ from app.domain.knowledge_product.value_objects import VersionBump
 class RuleSchema(BaseModel):
     condition: str
     action: str
+    rationale: str = ""
 
 
 class EscalationSchema(BaseModel):
     after: str
     escalate_to: str
+    action: str = ""
+
+
+class ProcessStepSchema(BaseModel):
+    name: str
+    description: str = ""
+    responsible_role: str = ""
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
+    decision: str | None = None
+    tools_used: list[str] = Field(default_factory=list)
+
+
+class RoleSchema(BaseModel):
+    name: str
+    responsibilities: list[str] = Field(default_factory=list)
+
+
+class ToolSchema(BaseModel):
+    name: str
+    purpose: str = ""
+
+
+class ProcessOverviewSchema(BaseModel):
+    summary: str = ""
+    trigger: str = ""
+    outcome: str = ""
 
 
 class CompileRequest(BaseModel):
-    process_steps: list[str] = Field(default_factory=list)
+    process_overview: ProcessOverviewSchema = Field(default_factory=ProcessOverviewSchema)
+    process_steps: list[ProcessStepSchema] = Field(default_factory=list)
     rules: list[RuleSchema] = Field(default_factory=list)
     policies: list[RuleSchema] = Field(default_factory=list)
     sla_target: str | None = None
     escalations: list[EscalationSchema] = Field(default_factory=list)
-    roles: list[str] = Field(default_factory=list)
-    tools: list[str] = Field(default_factory=list)
+    roles: list[RoleSchema] = Field(default_factory=list)
+    tools: list[ToolSchema] = Field(default_factory=list)
     bump: VersionBump = VersionBump.MINOR
     created_by: uuid.UUID
 

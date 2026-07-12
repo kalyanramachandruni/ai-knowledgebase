@@ -28,6 +28,9 @@ export function NavBar() {
         <Link href="/sources" className="text-sm text-gray-600 hover:text-gray-900">
           Sources
         </Link>
+        <Link href="/docs" className="text-sm text-gray-600 hover:text-gray-900">
+          Docs
+        </Link>
       </div>
       {user && (
         <div className="flex items-center gap-3 text-sm text-gray-600">

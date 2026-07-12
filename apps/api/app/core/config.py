@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Walk up from this file to find .env — works whether uvicorn is started from
+# apps/api/ or the project root.
+_HERE = Path(__file__).resolve().parent
+_ENV_FILE = next(
+    (p / ".env" for p in [_HERE, _HERE.parent, _HERE.parent.parent, _HERE.parent.parent.parent] if (p / ".env").exists()),
+    ".env",
+)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
 
     database_url: str = "postgresql+asyncpg://kps:kps@localhost:5432/knowledge_product_studio"
     redis_url: str = "redis://localhost:6379/0"

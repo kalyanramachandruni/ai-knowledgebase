@@ -28,7 +28,7 @@ export default function NewProductPage() {
         name,
         owner,
         compile: {
-          process_steps: steps.split("\n").map((s) => s.trim()).filter(Boolean),
+          process_steps: steps.split("\n").map((s) => s.trim()).filter(Boolean).map((name) => ({ name })),
           rules: [],
           policies: [],
           sla_target: slaTarget || null,

@@ -1,40 +1,79 @@
 from __future__ import annotations
 
+import uuid as _uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from httpx import HTTPError
 
 from app.api.deps import ConfluencePageRepositoryDep, ConfluenceSpaceRepositoryDep, EventOutboxDep, build_confluence_client
-from app.api.v1.confluence_schemas import ConfluencePageResponse, SyncSpaceRequest, SyncSpaceResponse
+from app.api.v1.confluence_schemas import ConfluencePageDetailResponse, ConfluencePageResponse, ConfluenceSpaceResponse, SyncSpaceRequest, SyncSpaceResponse
 from app.application.confluence.dto import SyncSpaceInput
 from app.application.confluence.use_cases import SyncConfluenceSpaceUseCase
+from app.application.extraction.html import strip_storage_format
 from app.core.security import CurrentUser, require_roles
 from app.domain.governance.value_objects import Role
 
 router = APIRouter(prefix="/confluence", tags=["confluence"])
 
 _OWNER_OR_ADMIN = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN)
+_ANY_ROLE = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN, Role.REVIEWER, Role.CONSUMER)
+
+
+@router.get("/spaces", response_model=list[ConfluenceSpaceResponse])
+async def list_spaces(
+    space_repository: ConfluenceSpaceRepositoryDep,
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
+) -> list[ConfluenceSpaceResponse]:
+    spaces = await space_repository.list_spaces()
+    return [ConfluenceSpaceResponse(id=s.id, space_key=s.space_key, name=s.name) for s in spaces]
 
 
 @router.get("/pages", response_model=list[ConfluencePageResponse])
 async def list_pages(
     page_repository: ConfluencePageRepositoryDep,
-    _current_user: Annotated[CurrentUser, Depends(require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN, Role.REVIEWER, Role.CONSUMER))],
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
     space_key: str | None = Query(default=None),
 ) -> list[ConfluencePageResponse]:
-    pages = await page_repository.list_pages(space_key)
+    rows = await page_repository.list_pages(space_key)
     return [
         ConfluencePageResponse(
             id=p.id,
             space_id=p.space_id,
+            space_key=sk,
             confluence_page_id=p.confluence_page_id,
             title=p.title,
             confluence_version=p.confluence_version,
             last_modified_at=p.last_modified_at,
         )
-        for p in pages
+        for p, sk in rows
     ]
+
+
+@router.get("/pages/{page_id}", response_model=ConfluencePageDetailResponse)
+async def get_page(
+    page_id: str,
+    page_repository: ConfluencePageRepositoryDep,
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
+) -> ConfluencePageDetailResponse:
+    try:
+        pid = _uuid.UUID(page_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid page id")
+    page = await page_repository.get_by_id(pid)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+    return ConfluencePageDetailResponse(
+        id=page.id,
+        space_id=page.space_id,
+        space_key="",
+        confluence_page_id=page.confluence_page_id,
+        title=page.title,
+        confluence_version=page.confluence_version,
+        last_modified_at=page.last_modified_at,
+        plain_text=strip_storage_format(page.body_storage_format or ""),
+        labels=page.labels,
+    )
 
 
 @router.post("/spaces/sync", response_model=SyncSpaceResponse)

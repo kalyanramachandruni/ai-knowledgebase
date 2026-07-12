@@ -19,10 +19,22 @@ class SyncSpaceResponse(BaseModel):
     pages_skipped_unchanged: int
 
 
+class ConfluenceSpaceResponse(BaseModel):
+    id: uuid.UUID
+    space_key: str
+    name: str
+
+
 class ConfluencePageResponse(BaseModel):
     id: uuid.UUID
     space_id: uuid.UUID
+    space_key: str
     confluence_page_id: str
     title: str
     confluence_version: int
     last_modified_at: datetime
+
+
+class ConfluencePageDetailResponse(ConfluencePageResponse):
+    plain_text: str
+    labels: list[str]

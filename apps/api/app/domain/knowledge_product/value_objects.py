@@ -67,18 +67,26 @@ class SemVer(ValueObject):
 class ProcessStep(ValueObject):
     name: str
     sequence: int
+    description: str = ""
+    responsible_role: str = ""
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    decision: str | None = None
+    tools_used: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class BusinessRule(ValueObject):
     condition: str
     action: str
+    rationale: str = ""
 
 
 @dataclass(frozen=True)
 class Policy(ValueObject):
     condition: str
     action: str
+    rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,16 +96,19 @@ class ServiceLevelAgreement(ValueObject):
 
 @dataclass(frozen=True)
 class Escalation(ValueObject):
-    after: str          # e.g. "90m"
+    after: str          # trigger — time elapsed (e.g. "90m"), condition, or event
     escalate_to: str    # role name
+    action: str = ""    # what the escalated party should do
 
 
 @dataclass(frozen=True)
 class Role(ValueObject):
     name: str
+    responsibilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class ToolReference(ValueObject):
-    key: str            # e.g. "sap_create_shipment"
+    key: str            # e.g. "Salesforce"
     display_name: str
+    purpose: str = ""   # how this tool is used in the process

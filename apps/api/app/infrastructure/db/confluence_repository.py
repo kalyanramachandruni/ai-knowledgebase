@@ -44,6 +44,10 @@ class SqlAlchemyConfluenceSpaceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def list_spaces(self) -> list[ConfluenceSpace]:
+        rows = (await self._session.execute(select(ConfluenceSpaceModel))).scalars().all()
+        return [_space_to_domain(row) for row in rows]
+
     async def get_by_key(self, space_key: str) -> ConfluenceSpace | None:
         row = (
             await self._session.execute(select(ConfluenceSpaceModel).where(ConfluenceSpaceModel.space_key == space_key))
@@ -73,12 +77,12 @@ class SqlAlchemyConfluencePageRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_pages(self, space_key: str | None = None) -> list[ConfluencePage]:
-        stmt = select(ConfluencePageModel)
+    async def list_pages(self, space_key: str | None = None) -> list[tuple[ConfluencePage, str]]:
+        stmt = select(ConfluencePageModel, ConfluenceSpaceModel.space_key).join(ConfluenceSpaceModel)
         if space_key:
-            stmt = stmt.join(ConfluenceSpaceModel).where(ConfluenceSpaceModel.space_key == space_key)
-        rows = (await self._session.execute(stmt)).scalars().all()
-        return [_page_to_domain(row, []) for row in rows]
+            stmt = stmt.where(ConfluenceSpaceModel.space_key == space_key)
+        rows = (await self._session.execute(stmt)).all()
+        return [(_page_to_domain(row[0], []), row[1]) for row in rows]
 
     async def get_by_id(self, page_id: uuid.UUID) -> ConfluencePage | None:
         row = await self._session.get(ConfluencePageModel, page_id)

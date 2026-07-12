@@ -9,6 +9,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.api.v1.routers.auth import router as auth_router
 from app.api.v1.routers.confluence import router as confluence_router
+from app.api.v1.routers.documents import router as documents_router
 from app.api.v1.routers.extraction import router as extraction_router
 from app.api.v1.routers.knowledge_products import router as knowledge_products_router
 from app.core.telemetry import setup_telemetry
@@ -39,6 +40,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 app.include_router(knowledge_products_router, prefix="/api/v1")
 app.include_router(confluence_router, prefix="/api/v1")
 app.include_router(extraction_router, prefix="/api/v1")
+app.include_router(documents_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 
 setup_telemetry(app)

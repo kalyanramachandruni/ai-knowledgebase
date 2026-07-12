@@ -48,9 +48,41 @@ class KnowledgeProductVersion:
     id: uuid.UUID = field(default_factory=new_id)
     status: KnowledgeProductStatus = KnowledgeProductStatus.DRAFT
     source_extraction_run_id: uuid.UUID | None = None
+    process_overview: dict = field(default_factory=dict)
 
     def to_canonical_dict(self, *, product_key: str, name: str, owner: str) -> dict:
-        """Shape matching the canonical Knowledge Product YAML schema (docs/sample_knowledge_product.yaml)."""
+        """Shape matching the canonical Knowledge Product YAML schema."""
+        steps = []
+        for s in sorted(self.process_steps, key=lambda s: s.sequence):
+            step: dict = {"name": s.name}
+            if s.description:
+                step["description"] = s.description
+            if s.responsible_role:
+                step["responsible_role"] = s.responsible_role
+            if s.inputs:
+                step["inputs"] = list(s.inputs)
+            if s.outputs:
+                step["outputs"] = list(s.outputs)
+            if s.decision:
+                step["decision"] = s.decision
+            if s.tools_used:
+                step["tools_used"] = list(s.tools_used)
+            steps.append(step)
+
+        roles = []
+        for r in self.roles:
+            role_dict: dict = {"name": r.name}
+            if r.responsibilities:
+                role_dict["responsibilities"] = list(r.responsibilities)
+            roles.append(role_dict)
+
+        tools = []
+        for t in self.tools:
+            tool_dict: dict = {"name": t.display_name or t.key}
+            if t.purpose:
+                tool_dict["purpose"] = t.purpose
+            tools.append(tool_dict)
+
         return {
             "metadata": {
                 "id": product_key,
@@ -58,13 +90,23 @@ class KnowledgeProductVersion:
                 "owner": owner,
                 "version": str(self.semver),
             },
-            "process": {"steps": [s.name for s in sorted(self.process_steps, key=lambda s: s.sequence)]},
-            "rules": [{"condition": r.condition, "action": r.action} for r in self.rules],
-            "policies": [{"condition": p.condition, "action": p.action} for p in self.policies],
+            "process_overview": self.process_overview or None,
+            "process": {"steps": steps},
+            "rules": [
+                {k: v for k, v in {"condition": r.condition, "action": r.action, "rationale": r.rationale}.items() if v}
+                for r in self.rules
+            ],
+            "policies": [
+                {k: v for k, v in {"condition": p.condition, "action": p.action, "rationale": p.rationale}.items() if v}
+                for p in self.policies
+            ],
             "sla": {"target": self.sla.target} if self.sla else None,
-            "escalations": [{"after": e.after, "escalate_to": e.escalate_to} for e in self.escalations],
-            "roles": [r.name for r in self.roles],
-            "tools": [t.key for t in self.tools],
+            "escalations": [
+                {k: v for k, v in {"after": e.after, "escalate_to": e.escalate_to, "action": e.action}.items() if v}
+                for e in self.escalations
+            ],
+            "roles": roles,
+            "tools": tools,
         }
 
 
@@ -97,6 +139,7 @@ class KnowledgeProduct(AggregateRoot):
         created_by: uuid.UUID,
         bump: VersionBump,
         source_extraction_run_id: uuid.UUID | None = None,
+        process_overview: dict | None = None,
     ) -> KnowledgeProductVersion:
         previous = self.versions[-1].semver if self.versions else SemVer(0, 0, 0)
         next_semver = previous.bump(bump) if self.versions else SemVer(1, 0, 0)
@@ -113,6 +156,7 @@ class KnowledgeProduct(AggregateRoot):
             tools=tools,
             created_by=created_by,
             source_extraction_run_id=source_extraction_run_id,
+            process_overview=process_overview or {},
         )
         self.versions.append(version)
         self.record_event(ProductCompiled(product_id=self.id, version_id=version.id, semver=str(next_semver)))

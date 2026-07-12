@@ -25,24 +25,72 @@ from app.infrastructure.db.models import KnowledgeProductModel, KnowledgeProduct
 def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVersion:
     content = row.yaml_content
     sla_content = content.get("sla")
+
+    # process.steps: old format = list[str], new format = list[dict]
+    raw_steps = content.get("process", {}).get("steps", [])
+    process_steps = []
+    for i, s in enumerate(raw_steps):
+        if isinstance(s, str):
+            process_steps.append(ProcessStep(name=s, sequence=i))
+        else:
+            process_steps.append(ProcessStep(
+                name=s.get("name", ""),
+                sequence=i,
+                description=s.get("description", ""),
+                responsible_role=s.get("responsible_role", ""),
+                inputs=tuple(s.get("inputs", [])),
+                outputs=tuple(s.get("outputs", [])),
+                decision=s.get("decision"),
+                tools_used=tuple(s.get("tools_used", [])),
+            ))
+
+    # roles: old format = list[str], new format = list[dict]
+    raw_roles = content.get("roles", [])
+    roles = []
+    for r in raw_roles:
+        if isinstance(r, str):
+            roles.append(Role(name=r))
+        else:
+            roles.append(Role(name=r.get("name", ""), responsibilities=tuple(r.get("responsibilities", []))))
+
+    # tools: old format = list[str], new format = list[dict]
+    raw_tools = content.get("tools", [])
+    tools = []
+    for t in raw_tools:
+        if isinstance(t, str):
+            tools.append(ToolReference(key=t, display_name=t))
+        else:
+            name = t.get("name", "")
+            tools.append(ToolReference(key=name, display_name=name, purpose=t.get("purpose", "")))
+
     return KnowledgeProductVersion(
         id=row.id,
         product_id=row.product_id,
         semver=SemVer.parse(row.semver),
         status=KnowledgeProductStatus(row.status),
-        process_steps=[
-            ProcessStep(name=name, sequence=i) for i, name in enumerate(content["process"]["steps"])
+        process_steps=process_steps,
+        rules=[
+            BusinessRule(condition=r["condition"], action=r["action"], rationale=r.get("rationale", ""))
+            for r in content.get("rules", [])
         ],
-        rules=[BusinessRule(condition=r["condition"], action=r["action"]) for r in content.get("rules", [])],
-        policies=[Policy(condition=p["condition"], action=p["action"]) for p in content.get("policies", [])],
+        policies=[
+            Policy(condition=p["condition"], action=p["action"], rationale=p.get("rationale", ""))
+            for p in content.get("policies", [])
+        ],
         sla=ServiceLevelAgreement(target=sla_content["target"]) if sla_content else None,
         escalations=[
-            Escalation(after=e["after"], escalate_to=e["escalate_to"]) for e in content.get("escalations", [])
+            Escalation(
+                after=e.get("after", e.get("trigger", "")),
+                escalate_to=e["escalate_to"],
+                action=e.get("action", ""),
+            )
+            for e in content.get("escalations", [])
         ],
-        roles=[Role(name=name) for name in content.get("roles", [])],
-        tools=[ToolReference(key=key, display_name=key) for key in content.get("tools", [])],
+        roles=roles,
+        tools=tools,
         created_by=row.created_by,
         source_extraction_run_id=row.source_extraction_run_id,
+        process_overview=content.get("process_overview") or {},
     )
 
 
@@ -53,7 +101,10 @@ def _product_to_domain(row: KnowledgeProductModel) -> KnowledgeProduct:
         name=row.name,
         owner=row.owner,
     )
-    product.versions = [_version_to_domain(v) for v in row.versions]
+    product.versions = sorted(
+        [_version_to_domain(v) for v in row.versions],
+        key=lambda v: (v.semver.major, v.semver.minor, v.semver.patch),
+    )
     return product
 
 
@@ -71,6 +122,37 @@ class SqlAlchemyKnowledgeProductRepository:
         )
         row = (await self._session.execute(stmt)).scalar_one_or_none()
         return _product_to_domain(row) if row else None
+
+    async def get_by_id_for_update(self, product_id: uuid.UUID) -> KnowledgeProduct | None:
+        """Like get_by_id but holds a row-level lock until the transaction commits.
+        Use when compiling a new version to prevent concurrent semver collisions."""
+        product_stmt = (
+            select(KnowledgeProductModel)
+            .where(KnowledgeProductModel.id == product_id)
+            .with_for_update()
+        )
+        product_row = (await self._session.execute(product_stmt)).scalar_one_or_none()
+        if product_row is None:
+            return None
+        versions_stmt = (
+            select(KnowledgeProductVersionModel)
+            .where(KnowledgeProductVersionModel.product_id == product_id)
+            .order_by(KnowledgeProductVersionModel.created_at)
+        )
+        version_rows = (await self._session.execute(versions_stmt)).scalars().all()
+        # Build domain object directly — avoids touching ORM relationship attributes
+        # outside a greenlet context (which causes MissingGreenlet errors).
+        product = KnowledgeProduct(
+            id=product_row.id,
+            product_key=product_row.product_key,
+            name=product_row.name,
+            owner=product_row.owner,
+        )
+        product.versions = sorted(
+            [_version_to_domain(v) for v in version_rows],
+            key=lambda v: (v.semver.major, v.semver.minor, v.semver.patch),
+        )
+        return product
 
     async def get_by_key(self, product_key: str) -> KnowledgeProduct | None:
         stmt = (

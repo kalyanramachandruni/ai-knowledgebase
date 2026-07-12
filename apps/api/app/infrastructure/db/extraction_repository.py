@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.extraction.entities import ExtractionRun, ExtractionStatus
@@ -27,6 +28,15 @@ class SqlAlchemyExtractionRunRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def list_by_page(self, page_id: uuid.UUID) -> list[ExtractionRun]:
+        stmt = (
+            select(ExtractionRunModel)
+            .where(ExtractionRunModel.page_id == page_id)
+            .order_by(ExtractionRunModel.started_at.desc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [_to_domain(r) for r in rows]
 
     async def get_by_id(self, run_id: uuid.UUID) -> ExtractionRun | None:
         row = await self._session.get(ExtractionRunModel, run_id)

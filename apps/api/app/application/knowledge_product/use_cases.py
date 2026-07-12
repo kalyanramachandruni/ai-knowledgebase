@@ -22,13 +22,26 @@ from app.domain.knowledge_product.value_objects import (
 
 def _compile_args(compile_input: CompileKnowledgeProductInput) -> dict:
     return {
-        "process_steps": [ProcessStep(name=name, sequence=i) for i, name in enumerate(compile_input.process_steps)],
-        "rules": [BusinessRule(condition=r.condition, action=r.action) for r in compile_input.rules],
-        "policies": [Policy(condition=p.condition, action=p.action) for p in compile_input.policies],
+        "process_steps": [
+            ProcessStep(
+                name=s.name,
+                sequence=i,
+                description=s.description,
+                responsible_role=s.responsible_role,
+                inputs=tuple(s.inputs),
+                outputs=tuple(s.outputs),
+                decision=s.decision,
+                tools_used=tuple(s.tools_used),
+            )
+            for i, s in enumerate(compile_input.process_steps)
+        ],
+        "rules": [BusinessRule(condition=r.condition, action=r.action, rationale=r.rationale) for r in compile_input.rules],
+        "policies": [Policy(condition=p.condition, action=p.action, rationale=p.rationale) for p in compile_input.policies],
         "sla": ServiceLevelAgreement(target=compile_input.sla_target) if compile_input.sla_target else None,
-        "escalations": [Escalation(after=e.after, escalate_to=e.escalate_to) for e in compile_input.escalations],
-        "roles": [Role(name=name) for name in compile_input.roles],
-        "tools": [ToolReference(key=key, display_name=key) for key in compile_input.tools],
+        "escalations": [Escalation(after=e.after, escalate_to=e.escalate_to, action=e.action) for e in compile_input.escalations],
+        "roles": [Role(name=r.name, responsibilities=tuple(r.responsibilities)) for r in compile_input.roles],
+        "tools": [ToolReference(key=t.name, display_name=t.name, purpose=t.purpose) for t in compile_input.tools],
+        "process_overview": compile_input.process_overview,
         "created_by": compile_input.created_by,
         "bump": compile_input.bump,
         "source_extraction_run_id": compile_input.source_extraction_run_id,
@@ -69,12 +82,14 @@ class CompileNewVersionUseCase:
         self._audit = audit
 
     async def execute(self, product_id: uuid.UUID, compile_input: CompileKnowledgeProductInput) -> KnowledgeProductVersion:
-        product = await self._repository.get_by_id(product_id)
+        # FOR UPDATE locks the product row until commit, serializing concurrent compiles
+        # so semver bumps never collide.
+        product = await self._repository.get_by_id_for_update(product_id)
         if product is None:
             raise KnowledgeProductNotFound(f"Knowledge Product {product_id} not found")
-
         version = product.compile_new_version(**_compile_args(compile_input))
         await self._repository.save(product)
+
         await self._audit.record(
             entity_type="knowledge_product_version",
             entity_id=version.id,

@@ -29,5 +29,5 @@ async def issue_dev_token(payload: DevTokenRequest, session: SessionDep) -> DevT
         user_row.display_name = payload.display_name
     await session.commit()
 
-    token = create_access_token(payload.user_id, payload.roles)
+    token = create_access_token(payload.user_id, payload.roles, expires_minutes=8 * 60)
     return DevTokenResponse(access_token=token, user_id=payload.user_id, roles=payload.roles)

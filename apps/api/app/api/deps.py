@@ -139,8 +139,9 @@ def get_compile_from_extraction_use_case(
     repository: RepositoryDep,
     create_use_case: Annotated[CreateKnowledgeProductUseCase, Depends(get_create_use_case)],
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
+    llm_port: Annotated[LLMExtractionPort, Depends(get_llm_port)],
 ) -> CompileFromExtractionUseCase:
-    return CompileFromExtractionUseCase(extraction_repository, repository, create_use_case, compile_use_case)
+    return CompileFromExtractionUseCase(extraction_repository, repository, create_use_case, compile_use_case, llm_port)
 
 
 def get_context_package_cache() -> RedisContextPackageCache:

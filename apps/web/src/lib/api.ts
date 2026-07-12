@@ -16,7 +16,26 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function refreshDevToken(): Promise<string | null> {
+  const { getUser, saveSession } = await import("@/lib/auth");
+  const user = getUser();
+  if (!user) return null;
+  try {
+    const res = await fetch(`${API_BASE_URL}/auth/dev-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: user.user_id, display_name: user.display_name, roles: user.roles }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    saveSession(data.access_token, user);
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+async function request<T>(path: string, options: RequestInit = {}, _retry = true): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -25,6 +44,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+
+  if (res.status === 401 && _retry) {
+    const newToken = await refreshDevToken();
+    if (newToken) return request<T>(path, options, false);
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, body.detail ?? res.statusText);
@@ -90,6 +115,39 @@ export const api = {
   createProduct: (payload: Record<string, unknown>) =>
     request<KnowledgeProduct>("/knowledge-products", { method: "POST", body: JSON.stringify(payload) }),
 
+  listDocuments: () =>
+    request<import("@/lib/types").DocumentSummary[]>("/documents"),
+
+  getDocument: (id: string) =>
+    request<import("@/lib/types").DocumentDetail>(`/documents/${id}`),
+
+  createDocument: (payload: { title?: string; parent_id?: string | null }) =>
+    request<import("@/lib/types").DocumentDetail>("/documents", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateDocument: (id: string, payload: { title?: string; content?: object }) =>
+    request<import("@/lib/types").DocumentDetail>(`/documents/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteDocument: (id: string) =>
+    request<void>(`/documents/${id}`, { method: "DELETE" }),
+
+  compileDocument: (id: string, payload: {
+    product_key: string;
+    name: string;
+    owner: string;
+    include_subpages: boolean;
+    bump: string;
+  }) =>
+    request<{ id: string; product_key: string; name: string }>(`/documents/${id}/compile`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   syncConfluenceSpace: (spaceKey: string, spaceName: string, baseUrl: string) =>
     request<{
       space_key: string;
@@ -101,10 +159,19 @@ export const api = {
       body: JSON.stringify({ space_key: spaceKey, space_name: spaceName, base_url: baseUrl }),
     }),
 
+  listConfluenceSpaces: () =>
+    request<import("@/lib/types").ConfluenceSpace[]>("/confluence/spaces"),
+
+  getPageExtractionHistory: (pageId: string) =>
+    request<import("@/lib/types").ExtractionRun[]>(`/confluence/pages/${pageId}/extraction-history`),
+
   listConfluencePages: (spaceKey?: string) => {
     const qs = spaceKey ? `?space_key=${encodeURIComponent(spaceKey)}` : "";
     return request<import("@/lib/types").ConfluencePage[]>(`/confluence/pages${qs}`);
   },
+
+  getConfluencePage: (pageId: string) =>
+    request<import("@/lib/types").ConfluencePageDetail>(`/confluence/pages/${pageId}`),
 
   extractPage: (pageId: string) =>
     request<import("@/lib/types").ExtractionRun>(`/confluence/pages/${pageId}/extract`, {

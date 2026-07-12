@@ -17,6 +17,19 @@ class ExtractionRunResponse(BaseModel):
     error_message: str | None
 
 
+class CompiledProductSummary(BaseModel):
+    product_id: uuid.UUID
+    product_key: str
+    name: str
+    version_id: uuid.UUID
+    semver: str
+
+
+class ExtractionRunWithProductResponse(ExtractionRunResponse):
+    started_at: str | None = None
+    compiled_product: CompiledProductSummary | None = None
+
+
 class CompileFromExtractionRequest(BaseModel):
     product_key: str
     name: str

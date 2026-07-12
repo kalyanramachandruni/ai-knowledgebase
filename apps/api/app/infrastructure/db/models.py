@@ -165,3 +165,27 @@ class EventOutbox(Base):
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Document(Base):
+    """Confluence-like rich-text document for the built-in wiki/docs editor."""
+
+    __tablename__ = "document"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="Untitled")
+    # TipTap stores its document as a JSON object; TEXT falls back for plain HTML
+    content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("document.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    children: Mapped[list["Document"]] = relationship(
+        "Document",
+        backref=__import__("sqlalchemy.orm", fromlist=["backref"]).backref("parent", remote_side="Document.id"),
+        foreign_keys=[parent_id],
+    )

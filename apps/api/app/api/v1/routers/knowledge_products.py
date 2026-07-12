@@ -37,8 +37,6 @@ from app.application.governance.use_cases import DecideApprovalUseCase, SubmitFo
 from app.application.knowledge_product.dto import (
     CompileKnowledgeProductInput,
     CreateKnowledgeProductInput,
-    EscalationInput,
-    RuleInput,
 )
 from app.application.knowledge_product.exceptions import (
     KnowledgeProductAlreadyExists,
@@ -65,14 +63,31 @@ _REVIEWER_OR_ADMIN = require_roles(Role.REVIEWER, Role.ADMIN)
 
 
 def _to_compile_input(compile_request: CompileRequest, source_extraction_run_id: uuid.UUID | None = None) -> CompileKnowledgeProductInput:
+    from app.application.knowledge_product.dto import ProcessStepInput, RoleInput, ToolInput
     return CompileKnowledgeProductInput(
-        process_steps=compile_request.process_steps,
-        rules=[RuleInput(condition=r.condition, action=r.action) for r in compile_request.rules],
-        policies=[RuleInput(condition=p.condition, action=p.action) for p in compile_request.policies],
+        process_overview={
+            "summary": compile_request.process_overview.summary,
+            "trigger": compile_request.process_overview.trigger,
+            "outcome": compile_request.process_overview.outcome,
+        },
+        process_steps=[
+            ProcessStepInput(
+                name=s.name,
+                description=s.description,
+                responsible_role=s.responsible_role,
+                inputs=s.inputs,
+                outputs=s.outputs,
+                decision=s.decision,
+                tools_used=s.tools_used,
+            )
+            for s in compile_request.process_steps
+        ],
+        rules=[RuleInput(condition=r.condition, action=r.action, rationale=r.rationale) for r in compile_request.rules],
+        policies=[RuleInput(condition=p.condition, action=p.action, rationale=p.rationale) for p in compile_request.policies],
         sla_target=compile_request.sla_target,
-        escalations=[EscalationInput(after=e.after, escalate_to=e.escalate_to) for e in compile_request.escalations],
-        roles=compile_request.roles,
-        tools=compile_request.tools,
+        escalations=[EscalationInput(after=e.after, escalate_to=e.escalate_to, action=e.action) for e in compile_request.escalations],
+        roles=[RoleInput(name=r.name, responsibilities=r.responsibilities) for r in compile_request.roles],
+        tools=[ToolInput(name=t.name, purpose=t.purpose) for t in compile_request.tools],
         created_by=compile_request.created_by,
         bump=compile_request.bump,
         source_extraction_run_id=source_extraction_run_id,

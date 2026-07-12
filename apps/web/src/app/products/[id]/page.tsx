@@ -125,12 +125,22 @@ export default function ProductDetailPage() {
           <KeyValue label="Version" value={v.content.metadata.version} />
         </Section>
 
-        <Section title="Process">
-          <ol className="list-inside list-decimal space-y-1 text-sm text-gray-700">
-            {v.content.process.steps.map((step, i) => (
-              <li key={i}>{step}</li>
-            ))}
-          </ol>
+        {v.content.process_overview && (
+          <Section title="Process Overview">
+            <div className="space-y-2 text-sm text-gray-700">
+              {v.content.process_overview.summary && <p>{v.content.process_overview.summary}</p>}
+              {v.content.process_overview.trigger && (
+                <p><span className="font-medium text-gray-500">Trigger: </span>{v.content.process_overview.trigger}</p>
+              )}
+              {v.content.process_overview.outcome && (
+                <p><span className="font-medium text-gray-500">Outcome: </span>{v.content.process_overview.outcome}</p>
+              )}
+            </div>
+          </Section>
+        )}
+
+        <Section title="Process Steps">
+          <StepList steps={v.content.process.steps} />
         </Section>
 
         <Section title="Rules">
@@ -149,9 +159,10 @@ export default function ProductDetailPage() {
           )}
           {v.content.escalations.length > 0 && (
             <ul className="mt-2 space-y-1 text-sm text-gray-700">
-              {v.content.escalations.map((e, i) => (
+              {v.content.escalations.map((e: {after?: string; trigger?: string; escalate_to: string; action?: string}, i: number) => (
                 <li key={i}>
-                  After {e.after} → escalate to {e.escalate_to}
+                  <span className="font-medium">{e.trigger ?? e.after}</span> → {e.escalate_to}
+                  {e.action && <span className="text-gray-500"> — {e.action}</span>}
                 </li>
               ))}
             </ul>
@@ -159,11 +170,11 @@ export default function ProductDetailPage() {
         </Section>
 
         <Section title="Roles">
-          <TagList items={v.content.roles} />
+          <RoleList items={v.content.roles} />
         </Section>
 
         <Section title="Tools">
-          <TagList items={v.content.tools} />
+          <ToolList items={v.content.tools} />
         </Section>
       </main>
     </div>
@@ -212,15 +223,84 @@ function RuleList({ items }: { items: { condition: string; action: string }[] })
   );
 }
 
-function TagList({ items }: { items: string[] }) {
+type StepItem = string | { name: string; description?: string; responsible_role?: string; inputs?: string[]; outputs?: string[]; decision?: string; tools_used?: string[] };
+type RoleItem = string | { name: string; responsibilities?: string[] };
+type ToolItem = string | { name: string; purpose?: string };
+
+function StepList({ steps }: { steps: StepItem[] }) {
+  if (steps.length === 0) return <p className="text-sm text-gray-400">No steps defined.</p>;
+  return (
+    <ol className="space-y-3">
+      {steps.map((step, i) => {
+        if (typeof step === "string") {
+          return (
+            <li key={i} className="flex gap-2 text-sm text-gray-700">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-medium text-gray-600">{i + 1}</span>
+              <span>{step}</span>
+            </li>
+          );
+        }
+        return (
+          <li key={i} className="flex gap-3">
+            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-medium text-blue-700">{i + 1}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-900">{step.name}</p>
+              {step.description && <p className="mt-0.5 text-sm text-gray-600">{step.description}</p>}
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-gray-500">
+                {step.responsible_role && <span>👤 {step.responsible_role}</span>}
+                {step.tools_used && step.tools_used.length > 0 && <span>🔧 {step.tools_used.join(", ")}</span>}
+                {step.decision && <span>⚡ Decision: {step.decision}</span>}
+              </div>
+              {(step.inputs?.length || step.outputs?.length) ? (
+                <div className="mt-1 flex gap-4 text-xs text-gray-500">
+                  {step.inputs?.length ? <span>In: {step.inputs.join(", ")}</span> : null}
+                  {step.outputs?.length ? <span>Out: {step.outputs.join(", ")}</span> : null}
+                </div>
+              ) : null}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function RoleList({ items }: { items: RoleItem[] }) {
   if (items.length === 0) return <p className="text-sm text-gray-400">None.</p>;
   return (
-    <div className="flex flex-wrap gap-2">
-      {items.map((item) => (
-        <span key={item} className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-700">
-          {item}
-        </span>
-      ))}
-    </div>
+    <ul className="space-y-2">
+      {items.map((item, i) => {
+        const name = typeof item === "string" ? item : item.name;
+        const responsibilities = typeof item === "string" ? [] : (item.responsibilities ?? []);
+        return (
+          <li key={i}>
+            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">{name}</span>
+            {responsibilities.length > 0 && (
+              <ul className="mt-1 ml-4 list-disc space-y-0.5 text-xs text-gray-500">
+                {responsibilities.map((r, j) => <li key={j}>{r}</li>)}
+              </ul>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ToolList({ items }: { items: ToolItem[] }) {
+  if (items.length === 0) return <p className="text-sm text-gray-400">None.</p>;
+  return (
+    <ul className="space-y-1.5">
+      {items.map((item, i) => {
+        const name = typeof item === "string" ? item : item.name;
+        const purpose = typeof item === "string" ? "" : (item.purpose ?? "");
+        return (
+          <li key={i} className="flex flex-wrap items-baseline gap-2 text-sm">
+            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">{name}</span>
+            {purpose && <span className="text-xs text-gray-500">{purpose}</span>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

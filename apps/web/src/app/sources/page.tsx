@@ -286,11 +286,16 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     });
   }
 
-  function toggleSelectAll(pages: ConfluencePage[]) {
-    if (pages.every((p) => selectedIds.has(p.id))) {
-      setSelectedIds(new Set());
+  function toggleSelectAll(filteredPages: ConfluencePage[]) {
+    if (filteredPages.every((p) => selectedIds.has(p.id))) {
+      // Deselect only the currently filtered pages, leave others intact
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        filteredPages.forEach((p) => next.delete(p.id));
+        return next;
+      });
     } else {
-      setSelectedIds(new Set(pages.map((p) => p.id)));
+      setSelectedIds((prev) => new Set([...prev, ...filteredPages.map((p) => p.id)]));
     }
   }
 
@@ -302,31 +307,61 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     if (!user?.user_id) { setError("Not logged in."); return; }
     setBulkRunning(true);
     setError(null);
+
+    // Phase 1: extract all pages, collect succeeded run IDs
+    const succeededRunIds: string[] = [];
     for (const page of filteredPages) {
       setBulkStatus((s) => ({ ...s, [page.id]: "extracting" }));
-      let run: ExtractionRun;
       try {
-        run = await api.extractPage(page.id);
+        const run = await api.extractPage(page.id);
         setRuns((r) => ({ ...r, [page.id]: run }));
-        if (run.status === "failed") { setBulkStatus((s) => ({ ...s, [page.id]: "failed" })); continue; }
-        setBulkStatus((s) => ({ ...s, [page.id]: "extracted" }));
-      } catch { setBulkStatus((s) => ({ ...s, [page.id]: "failed" })); continue; }
-      setBulkStatus((s) => ({ ...s, [page.id]: "compiling" }));
-      try {
-        const product = await api.compileExtraction(run.id, {
-          product_key: bulkProductKey, name: bulkProductName, owner: bulkOwner, created_by: user.user_id,
-        });
+        if (run.status === "failed") {
+          setBulkStatus((s) => ({ ...s, [page.id]: "failed" }));
+        } else {
+          succeededRunIds.push(run.id);
+          setBulkStatus((s) => ({ ...s, [page.id]: "extracted" }));
+        }
+      } catch {
+        setBulkStatus((s) => ({ ...s, [page.id]: "failed" }));
+      }
+    }
+
+    if (succeededRunIds.length === 0) {
+      setError("All extractions failed — nothing to compile.");
+      setBulkRunning(false);
+      return;
+    }
+
+    // Phase 2: single batch-compile from all succeeded runs → one KP version
+    filteredPages.forEach((page) => {
+      setBulkStatus((s) => s[page.id] === "extracted" ? { ...s, [page.id]: "compiling" } : s);
+    });
+    try {
+      const product = await api.batchCompile({
+        run_ids: succeededRunIds,
+        product_key: bulkProductKey,
+        name: bulkProductName,
+        owner: bulkOwner,
+        created_by: user.user_id,
+      });
+      const newEntry: CompiledProductSummary = {
+        product_id: product.id, product_key: product.product_key, name: product.name,
+        version_id: product.current_version.id, semver: product.current_version.semver,
+      };
+      // Mark every successfully extracted page as compiled and update their summary
+      filteredPages.forEach((page) => {
         setCompiled((c) => ({ ...c, [page.id]: product }));
         setCompiledSummaries((cs) => {
-          const newEntry: CompiledProductSummary = {
-            product_id: product.id, product_key: product.product_key, name: product.name,
-            version_id: product.current_version.id, semver: product.current_version.semver,
-          };
           const existing = (cs[page.id] ?? []).filter((s) => s.product_key !== product.product_key);
           return { ...cs, [page.id]: [newEntry, ...existing] };
         });
-        setBulkStatus((s) => ({ ...s, [page.id]: "compiled" }));
-      } catch { setBulkStatus((s) => ({ ...s, [page.id]: "failed" })); }
+        setBulkStatus((s) => s[page.id] !== "failed" ? { ...s, [page.id]: "compiled" } : s);
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Batch compile failed");
+      filteredPages.forEach((page) => {
+        setBulkStatus((s) => s[page.id] === "compiling" ? { ...s, [page.id]: "failed" } : s);
+      });
     }
     setBulkRunning(false);
   }

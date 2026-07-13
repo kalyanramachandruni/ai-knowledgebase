@@ -188,4 +188,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ...payload, bump: "minor" }),
     }),
+
+  batchCompile: (payload: {
+    run_ids: string[];
+    product_key: string;
+    name: string;
+    owner: string;
+    created_by: string;
+  }) =>
+    request<import("@/lib/types").KnowledgeProduct>("/extraction-runs/batch-compile", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, bump: "minor" }),
+    }),
 };

@@ -33,6 +33,9 @@ class ConfluenceSpace(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     base_url: Mapped[str] = mapped_column(String, nullable=False)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync_created: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_sync_updated: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_sync_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     pages: Mapped[list["ConfluencePage"]] = relationship(back_populates="space")
@@ -82,6 +85,12 @@ class ExtractionRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    compiled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    compiled_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_product_version.id"), nullable=True
+    )
+    compile_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    compile_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class KnowledgeProductModel(Base):

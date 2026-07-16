@@ -15,6 +15,7 @@ class ExtractionRunResponse(BaseModel):
     llm_model: str
     structured_draft: dict | None
     error_message: str | None
+    reused: bool = False
 
 
 class CompiledProductSummary(BaseModel):
@@ -28,6 +29,12 @@ class CompiledProductSummary(BaseModel):
 class ExtractionRunWithProductResponse(ExtractionRunResponse):
     started_at: str | None = None
     compiled_product: CompiledProductSummary | None = None
+    compiled_at: str | None = None
+    compile_status: str | None = None
+    compile_error: str | None = None
+    compiled_version_id: str | None = None
+    prev_compiled_product: CompiledProductSummary | None = None
+    prev_compiled_at: str | None = None
 
 
 class CompileFromExtractionRequest(BaseModel):

@@ -115,6 +115,9 @@ export const api = {
   createProduct: (payload: Record<string, unknown>) =>
     request<KnowledgeProduct>("/knowledge-products", { method: "POST", body: JSON.stringify(payload) }),
 
+  updateProduct: (id: string, payload: Record<string, unknown>) =>
+    request<KnowledgeProduct>(`/knowledge-products/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
+
   listDocuments: () =>
     request<import("@/lib/types").DocumentSummary[]>("/documents"),
 
@@ -165,6 +168,16 @@ export const api = {
   getPageExtractionHistory: (pageId: string) =>
     request<import("@/lib/types").ExtractionRun[]>(`/confluence/pages/${pageId}/extraction-history`),
 
+  getBulkExtractionHistory: (spaceKey?: string) => {
+    const qs = spaceKey ? `?space_key=${encodeURIComponent(spaceKey)}` : "";
+    return request<Record<string, import("@/lib/types").ExtractionRun[]>>(`/confluence/extraction-history${qs}`);
+  },
+
+  getPendingCompileRuns: (spaceKey: string) =>
+    request<Array<{ page_id: string; run_id: string }>>(
+      `/confluence/pages/pending-compile?space_key=${encodeURIComponent(spaceKey)}`
+    ),
+
   listConfluencePages: (spaceKey?: string) => {
     const qs = spaceKey ? `?space_key=${encodeURIComponent(spaceKey)}` : "";
     return request<import("@/lib/types").ConfluencePage[]>(`/confluence/pages${qs}`);
@@ -178,6 +191,11 @@ export const api = {
       method: "POST",
     }),
 
+  smartExtractPage: (pageId: string) =>
+    request<import("@/lib/types").ExtractionRun>(`/confluence/pages/${pageId}/smart-extract`, {
+      method: "POST",
+    }),
+
   compileExtraction: (runId: string, payload: {
     product_key: string;
     name: string;
@@ -188,6 +206,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ...payload, bump: "minor" }),
     }),
+
+  exportSkillBundle: (id: string, format: "json" | "markdown") => {
+    const token = getToken();
+    return fetch(`${API_BASE_URL}/knowledge-products/${id}/skill-bundles?format=${format}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(async (res) => {
+      if (!res.ok) throw new ApiError(res.status, await res.text());
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : `skill-bundle.${format === "markdown" ? "md" : "json"}`;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  },
 
   batchCompile: (payload: {
     run_ids: string[];

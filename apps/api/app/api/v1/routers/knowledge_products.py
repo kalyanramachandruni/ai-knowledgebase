@@ -127,6 +127,170 @@ async def create_knowledge_product(
     return KnowledgeProductResponse.from_domain(product)
 
 
+@router.get("/{product_id}/skill-bundles")
+async def get_skill_bundles(
+    product_id: uuid.UUID,
+    use_case: Annotated[GetKnowledgeProductUseCase, Depends(get_get_use_case)],
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    format: Literal["json", "markdown"] = Query(default="json"),
+):
+    try:
+        product = await use_case.execute(product_id)
+    except KnowledgeProductNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    v = product.current_version
+    c = v.to_canonical_dict(product_key=product.product_key, name=product.name, owner=product.owner)
+    meta = c.get("metadata", {})
+    bundle = {
+        "schema_version": "1.0",
+        "source_product": {
+            "id": meta.get("id", product.product_key),
+            "name": meta.get("name", product.name),
+            "version": meta.get("version", product.current_version.semver),
+            "owner": meta.get("owner", product.owner),
+        },
+        "bundles": [
+            {
+                "id": f"SKILL-{product.product_key}-001",
+                "agent_type": "general",
+                "name": meta.get("name", product.name),
+                "sla": (c.get("sla") or {}).get("target"),
+                "process_overview": c.get("process_overview"),
+                "capabilities": [
+                    r.get("action") for r in (c.get("roles") or [])
+                    if isinstance(r, dict) and r.get("responsibilities")
+                ],
+                "rules": [
+                    {"condition": r.get("condition"), "action": r.get("action"), "rationale": r.get("rationale")}
+                    for r in (c.get("rules") or [])
+                    if isinstance(r, dict)
+                ],
+                "policies": [
+                    {"condition": p.get("condition"), "action": p.get("action"), "rationale": p.get("rationale")}
+                    for p in (c.get("policies") or [])
+                    if isinstance(p, dict)
+                ],
+                "escalations": [
+                    {"trigger": e.get("after") or e.get("trigger"), "escalate_to": e.get("escalate_to"), "action": e.get("action")}
+                    for e in (c.get("escalations") or [])
+                    if isinstance(e, dict)
+                ],
+                "process_steps": [
+                    {
+                        "name": s.get("name") if isinstance(s, dict) else s,
+                        "description": s.get("description") if isinstance(s, dict) else None,
+                        "responsible_role": s.get("responsible_role") if isinstance(s, dict) else None,
+                        "tools_used": s.get("tools_used") if isinstance(s, dict) else [],
+                        "inputs": s.get("inputs") if isinstance(s, dict) else [],
+                        "outputs": s.get("outputs") if isinstance(s, dict) else [],
+                        "decision": s.get("decision") if isinstance(s, dict) else None,
+                    }
+                    for s in ((c.get("process") or {}).get("steps") or [])
+                ],
+                "roles": [
+                    {"name": r.get("name") if isinstance(r, dict) else r, "responsibilities": r.get("responsibilities") if isinstance(r, dict) else []}
+                    for r in (c.get("roles") or [])
+                    if isinstance(r, dict) or isinstance(r, str)
+                ],
+                "tools": [
+                    {"name": t.get("name") if isinstance(t, dict) else t, "purpose": t.get("purpose") if isinstance(t, dict) else None}
+                    for t in (c.get("tools") or [])
+                    if isinstance(t, dict) or isinstance(t, str)
+                ],
+            }
+        ],
+    }
+
+    if format == "markdown":
+        b = bundle["bundles"][0]
+        src = bundle["source_product"]
+        lines = [
+            "---",
+            f'name: {b["id"]}',
+            f'description: Skill bundle for {src["name"]} (v{src["version"]}) — generated from knowledge product {src["id"]}',
+            "metadata:",
+            f'  product_id: "{str(product_id)}"',
+            f'  product_key: "{src["id"]}"',
+            f'  version: "{src["version"]}"',
+            f'  owner: "{src["owner"]}"',
+            "---",
+            "",
+            f'# {src["name"]} — Agent Skill Bundle',
+            "",
+        ]
+        if b.get("sla"):
+            lines += [f'**SLA:** {b["sla"]}', ""]
+        po = b.get("process_overview") or {}
+        if po.get("summary"):
+            lines += ["## Process Overview", "", po["summary"], ""]
+        if po.get("trigger"):
+            lines += [f'**Trigger:** {po["trigger"]}', ""]
+        if po.get("outcome"):
+            lines += [f'**Outcome:** {po["outcome"]}', ""]
+        if b.get("rules"):
+            lines += ["## Decision Rules", ""]
+            for r in b["rules"]:
+                lines.append(f'- **If** {r["condition"]} → {r["action"]}')
+                if r.get("rationale"):
+                    lines.append(f'  *(Rationale: {r["rationale"]})*')
+            lines.append("")
+        if b.get("policies"):
+            lines += ["## Policies", ""]
+            for p in b["policies"]:
+                lines.append(f'- **{p["condition"]}** → {p["action"]}')
+                if p.get("rationale"):
+                    lines.append(f'  *(Rationale: {p["rationale"]})*')
+            lines.append("")
+        if b.get("escalations"):
+            lines += ["## Escalation Paths", ""]
+            for e in b["escalations"]:
+                lines.append(f'- **Trigger:** {e["trigger"]} → **Escalate to:** {e["escalate_to"]} — {e["action"]}')
+            lines.append("")
+        if b.get("process_steps"):
+            lines += ["## Process Steps", ""]
+            for i, s in enumerate(b["process_steps"], 1):
+                name = s.get("name") or f"Step {i}"
+                lines.append(f'{i}. **{name}**')
+                if s.get("description"):
+                    lines.append(f'   {s["description"]}')
+                if s.get("responsible_role"):
+                    lines.append(f'   *Role: {s["responsible_role"]}*')
+                if s.get("tools_used"):
+                    lines.append(f'   *Tools: {", ".join(s["tools_used"])}*')
+            lines.append("")
+        if b.get("tools"):
+            lines += ["## Tools & Systems", ""]
+            for t in b["tools"]:
+                purpose = f" — {t['purpose']}" if t.get("purpose") else ""
+                lines.append(f'- `{t["name"]}`{purpose}')
+            lines.append("")
+        if b.get("roles"):
+            lines += ["## Roles", ""]
+            for r in b["roles"]:
+                name = r.get("name") or r
+                resps = r.get("responsibilities") or []
+                lines.append(f'- **{name}**')
+                for resp in resps:
+                    lines.append(f'  - {resp}')
+            lines.append("")
+
+        filename = f'{src["id"].lower()}-skill-bundle.md'
+        return Response(
+            content="\n".join(lines),
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    filename = f'{meta.get("id", product.product_key).lower()}-skill-bundle.json'
+    import json
+    return Response(
+        content=json.dumps(bundle, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{product_id}", response_model=KnowledgeProductResponse)
 async def get_knowledge_product(
     product_id: uuid.UUID,

@@ -77,6 +77,12 @@ export interface ConfluenceSpace {
   id: string;
   space_key: string;
   name: string;
+  base_url: string;
+  last_synced_at: string | null;
+  page_count: number;
+  last_sync_created: number | null;
+  last_sync_updated: number | null;
+  last_sync_skipped: number | null;
 }
 
 export interface ConfluencePage {
@@ -112,4 +118,11 @@ export interface ExtractionRun {
   error_message: string | null;
   started_at?: string | null;
   compiled_product?: CompiledProductSummary | null;
+  reused?: boolean;
+  compiled_at?: string | null;
+  compile_status?: "succeeded" | "failed" | null;
+  compile_error?: string | null;
+  compiled_version_id?: string | null;
+  prev_compiled_product?: CompiledProductSummary | null;
+  prev_compiled_at?: string | null;
 }

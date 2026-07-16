@@ -6,7 +6,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from httpx import HTTPError
 
-from app.api.deps import ConfluencePageRepositoryDep, ConfluenceSpaceRepositoryDep, EventOutboxDep, build_confluence_client
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import ConfluencePageRepositoryDep, ConfluenceSpaceRepositoryDep, EventOutboxDep, SessionDep, build_confluence_client
+from app.infrastructure.db.extraction_repository import SqlAlchemyExtractionRunRepository
+from app.infrastructure.db.models import ConfluencePage as ConfluencePageModel, ConfluenceSpace as ConfluenceSpaceModel
 from app.api.v1.confluence_schemas import ConfluencePageDetailResponse, ConfluencePageResponse, ConfluenceSpaceResponse, SyncSpaceRequest, SyncSpaceResponse
 from app.application.confluence.dto import SyncSpaceInput
 from app.application.confluence.use_cases import SyncConfluenceSpaceUseCase
@@ -25,8 +30,21 @@ async def list_spaces(
     space_repository: ConfluenceSpaceRepositoryDep,
     _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
 ) -> list[ConfluenceSpaceResponse]:
-    spaces = await space_repository.list_spaces()
-    return [ConfluenceSpaceResponse(id=s.id, space_key=s.space_key, name=s.name) for s in spaces]
+    rows = await space_repository.list_spaces()
+    return [
+        ConfluenceSpaceResponse(
+            id=s.id,
+            space_key=s.space_key,
+            name=s.name,
+            base_url=s.base_url,
+            last_synced_at=s.last_synced_at,
+            page_count=page_count,
+            last_sync_created=s.last_sync_created,
+            last_sync_updated=s.last_sync_updated,
+            last_sync_skipped=s.last_sync_skipped,
+        )
+        for s, page_count in rows
+    ]
 
 
 @router.get("/pages", response_model=list[ConfluencePageResponse])
@@ -48,6 +66,23 @@ async def list_pages(
         )
         for p, sk in rows
     ]
+
+
+@router.get("/pages/pending-compile", response_model=list[dict])
+async def get_pending_compile_runs(
+    session: SessionDep,
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
+    space_key: str = Query(...),
+) -> list[dict]:
+    page_id_stmt = (
+        select(ConfluencePageModel.id)
+        .join(ConfluenceSpaceModel, ConfluencePageModel.space_id == ConfluenceSpaceModel.id)
+        .where(ConfluenceSpaceModel.space_key == space_key)
+    )
+    page_ids = list((await session.execute(page_id_stmt)).scalars().all())
+    repo = SqlAlchemyExtractionRunRepository(session)
+    pending = await repo.list_pending_compile(page_ids)
+    return [{"page_id": str(r.page_id), "run_id": str(r.id)} for r in pending]
 
 
 @router.get("/pages/{page_id}", response_model=ConfluencePageDetailResponse)

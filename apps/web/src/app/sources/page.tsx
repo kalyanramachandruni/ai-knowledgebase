@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
 import { api, ApiError } from "@/lib/api";
 import { getToken, getUser, redirectIfUnauthorized } from "@/lib/auth";
-import type { ConfluencePage, ConfluencePageDetail, ConfluenceSpace, ExtractionRun, KnowledgeProduct, CompiledProductSummary } from "@/lib/types";
+import type { ConfluencePage, ConfluencePageDetail, ConfluenceSpace, ExtractionRun, CompiledProductSummary } from "@/lib/types";
 
 interface SyncResult {
   space_key: string;
@@ -15,6 +15,7 @@ interface SyncResult {
 }
 
 type Tab = "connect" | "pages";
+type PageStatus = "idle" | "extracting" | "extracted" | "reused" | "compiling" | "compiled" | "failed";
 
 export default function SourcesPage() {
   const router = useRouter();
@@ -66,28 +67,52 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 }
 
 function ConnectTab({ isOwner, router }: { isOwner: boolean; router: ReturnType<typeof useRouter> }) {
-  const [spaceKey, setSpaceKey] = useState("");
-  const [spaceName, setSpaceName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<SyncResult | null>(null);
+  const [spaces, setSpaces] = useState<ConfluenceSpace[]>([]);
+  const [loadingSpaces, setLoadingSpaces] = useState(true);
 
-  async function handleSubmit(e: React.FormEvent) {
+  // Form state — used for both "connect new" and "resync existing"
+  const [formSpaceKey, setFormSpaceKey] = useState("");
+  const [formSpaceName, setFormSpaceName] = useState("");
+  const [formBaseUrl, setFormBaseUrl] = useState("");
+  const [syncing, setSyncing] = useState<string | null>(null); // space_key being synced, or "new"
+  const [formError, setFormError] = useState<string | null>(null);
+  const [syncResults, setSyncResults] = useState<Record<string, SyncResult>>({});
+
+  function loadSpaces() {
+    setLoadingSpaces(true);
+    api.listConfluenceSpaces()
+      .then(setSpaces)
+      .catch(() => {})
+      .finally(() => setLoadingSpaces(false));
+  }
+
+  useEffect(() => { loadSpaces(); }, []);
+
+  async function handleSync(e: React.FormEvent, spaceKey: string, spaceName: string, baseUrl: string) {
     e.preventDefault();
-    setError(null);
-    setResult(null);
-    setLoading(true);
+    setFormError(null);
+    setSyncing(spaceKey || "new");
     try {
-      const syncResult = await api.syncConfluenceSpace(spaceKey, spaceName, baseUrl);
-      setResult(syncResult);
+      const result = await api.syncConfluenceSpace(spaceKey, spaceName, baseUrl);
+      setSyncResults((prev) => ({ ...prev, [result.space_key]: result }));
+      loadSpaces();
+      if (!spaceKey) {
+        setFormSpaceKey("");
+        setFormSpaceName("");
+        setFormBaseUrl("");
+      }
     } catch (err) {
       if (!redirectIfUnauthorized(err, router)) {
-        setError(err instanceof ApiError ? err.message : String(err));
+        setFormError(err instanceof ApiError ? err.message : String(err));
       }
     } finally {
-      setLoading(false);
+      setSyncing(null);
     }
+  }
+
+  function fmt(dt: string | null) {
+    if (!dt) return "—";
+    return new Date(dt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
 
   return (
@@ -97,44 +122,105 @@ function ConnectTab({ isOwner, router }: { isOwner: boolean; router: ReturnType<
           Connecting a source requires the Knowledge Owner or Admin role.
         </p>
       )}
-      <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-gray-200 bg-white p-6">
-        <Field label="Space key" value={spaceKey} onChange={setSpaceKey} placeholder="LOG" disabled={!isOwner} />
-        <Field label="Space name" value={spaceName} onChange={setSpaceName} placeholder="Logistics" disabled={!isOwner} />
-        <Field
-          label="Confluence base URL"
-          value={baseUrl}
-          onChange={setBaseUrl}
-          placeholder="https://api.atlassian.com/ex/confluence/{cloudId}/wiki/rest/api"
-          disabled={!isOwner}
-        />
-        <p className="text-xs text-gray-400">
-          Uses the API token configured server-side (CONFLUENCE_API_TOKEN) — credentials aren&apos;t entered here.
-        </p>
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <button
-          type="submit"
-          disabled={loading || !isOwner}
-          className="rounded bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
-        >
-          {loading ? "Syncing..." : "Connect & Sync"}
-        </button>
-      </form>
 
-      {result && (
-        <div className="mt-6 rounded-lg border border-green-200 bg-green-50 p-5 text-sm text-green-900">
-          <p className="font-medium">Synced space &quot;{result.space_key}&quot;</p>
-          <ul className="mt-2 space-y-1">
-            <li>Pages created: {result.pages_created}</li>
-            <li>Pages updated: {result.pages_updated}</li>
-            <li>Pages unchanged (skipped): {result.pages_skipped_unchanged}</li>
-          </ul>
+      {/* Connect new space form */}
+      {isOwner && (
+        <>
+          <h2 className="mb-3 text-sm font-semibold text-gray-700">
+            {spaces.length > 0 ? "Connect a new space" : "Connect space"}
+          </h2>
+          <form
+            onSubmit={(e) => handleSync(e, formSpaceKey, formSpaceName, formBaseUrl)}
+            className="mb-8 space-y-4 rounded-lg border border-gray-200 bg-white p-6"
+          >
+            <Field label="Space key" value={formSpaceKey} onChange={setFormSpaceKey} placeholder="LOG" disabled={!!syncing} />
+            <Field label="Space name" value={formSpaceName} onChange={setFormSpaceName} placeholder="Logistics" disabled={!!syncing} />
+            <Field
+              label="Confluence base URL"
+              value={formBaseUrl}
+              onChange={setFormBaseUrl}
+              placeholder="https://api.atlassian.com/ex/confluence/{cloudId}/wiki/rest/api"
+              disabled={!!syncing}
+            />
+            <p className="text-xs text-gray-400">
+              Uses the API token configured server-side (CONFLUENCE_API_TOKEN) — credentials aren&apos;t entered here.
+            </p>
+            {formError && <p className="text-sm text-red-600">{formError}</p>}
+            <button
+              type="submit"
+              disabled={!!syncing}
+              className="rounded bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
+            >
+              {syncing === "new" ? "Syncing..." : "Connect & Sync"}
+            </button>
+          </form>
+        </>
+      )}
+
+      {/* Synced spaces list */}
+      {!loadingSpaces && spaces.length > 0 && (
+        <div className="mb-8">
+          <h2 className="mb-3 text-sm font-semibold text-gray-700">Synced spaces</h2>
+          <div className="space-y-3">
+            {spaces.map((space) => {
+              const result = syncResults[space.space_key];
+              const isSyncing = syncing === space.space_key;
+              return (
+                <div key={space.id} className="rounded-lg border border-gray-200 bg-white p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-600">
+                          {space.space_key}
+                        </span>
+                        <span className="font-medium text-gray-900">{space.name}</span>
+                      </div>
+                      <p className="mt-1 truncate text-xs text-gray-400">{space.base_url}</p>
+                      <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500">
+                        <span>Last synced: <span className="text-gray-700">{fmt(space.last_synced_at)}</span></span>
+                        <span>Pages: <span className="text-gray-700">{space.page_count}</span></span>
+                        {space.last_sync_created != null && (
+                          <>
+                            <span>Created: <span className="text-green-700">{space.last_sync_created}</span></span>
+                            <span>Updated: <span className="text-blue-700">{space.last_sync_updated ?? 0}</span></span>
+                            <span>Skipped: <span className="text-gray-600">{space.last_sync_skipped ?? 0}</span></span>
+                          </>
+                        )}
+                      </div>
+                      {result && (
+                        <div className="mt-2 rounded border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
+                          Sync complete — created {result.pages_created}, updated {result.pages_updated}, skipped {result.pages_skipped_unchanged}
+                        </div>
+                      )}
+                    </div>
+                    {isOwner && (
+                      <form
+                        onSubmit={(e) => handleSync(e, space.space_key, space.name, space.base_url)}
+                        className="shrink-0"
+                      >
+                        <button
+                          type="submit"
+                          disabled={!!syncing}
+                          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          {isSyncing ? "Syncing..." : "Resync"}
+                        </button>
+                      </form>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
+      )}
+
+      {!isOwner && spaces.length === 0 && !loadingSpaces && (
+        <p className="text-sm text-gray-500">No spaces connected yet.</p>
       )}
     </>
   );
 }
-
-type BulkStatus = "idle" | "extracting" | "extracted" | "compiling" | "compiled" | "failed";
 
 function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnType<typeof useRouter>; user: ReturnType<typeof getUser> }) {
   const [spaces, setSpaces] = useState<ConfluenceSpace[]>([]);
@@ -144,76 +230,50 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pageDetails, setPageDetails] = useState<Record<string, ConfluencePageDetail | null>>({});
   const [loadingDetail, setLoadingDetail] = useState<Record<string, boolean>>({});
-  const [extracting, setExtracting] = useState<Record<string, boolean>>({});
   const [runs, setRuns] = useState<Record<string, ExtractionRun>>({});
-  const [compiling, setCompiling] = useState<Record<string, boolean>>({});
-  const [compiled, setCompiled] = useState<Record<string, KnowledgeProduct>>({});
-  const [compiledSummaries, setCompiledSummaries] = useState<Record<string, CompiledProductSummary[]>>({});
-  const [compileForm, setCompileForm] = useState<Record<string, { name: string; key: string; owner: string }>>({});
   const [search, setSearch] = useState("");
-  const [bulkStatus, setBulkStatus] = useState<Record<string, BulkStatus>>({});
-  const [bulkRunning, setBulkRunning] = useState(false);
-  const [bulkProductKey, setBulkProductKey] = useState("");
-  const [bulkProductName, setBulkProductName] = useState("");
-  const [bulkOwner, setBulkOwner] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [productFilter, setProductFilter] = useState<Set<string>>(new Set());
-  const [productDropdownOpen, setProductDropdownOpen] = useState(false);
+  const [pageStatus, setPageStatus] = useState<Record<string, PageStatus>>({});
+
+  // Space-level action state
+  const [extracting, setExtracting] = useState(false);
+  const [compiling, setCompiling] = useState(false);
+  const [compileProductKey, setCompileProductKey] = useState("");
+  const [compileProductName, setCompileProductName] = useState("");
+  const [compileOwner, setCompileOwner] = useState("");
+  const [productIndex, setProductIndex] = useState<Record<string, { name: string; owner: string }>>({});
+  const [compileResult, setCompileResult] = useState<{ product_key: string; name: string; semver: string } | null>(null);
 
   useEffect(() => {
     api.listConfluenceSpaces().then(setSpaces).catch(() => {});
+    api.listProducts().then((products) => {
+      const idx: Record<string, { name: string; owner: string }> = {};
+      products.forEach((p) => { idx[p.product_key] = { name: p.name, owner: p.owner }; });
+      setProductIndex(idx);
+    }).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (!productDropdownOpen) return;
-    const close = (e: MouseEvent) => {
-      if (!(e.target as Element).closest("[data-product-dropdown]")) {
-        setProductDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [productDropdownOpen]);
 
   useEffect(() => {
     setPages(null);
     setRuns({});
-    setCompiled({});
-    setCompiledSummaries({});
-    setProductFilter(new Set());
-    setSelectedIds(new Set());
+    setPageStatus({});
+    setCompileResult(null);
+    if (!selectedSpace && spaces.length === 0) return;
     api.listConfluencePages(selectedSpace || undefined)
       .then(async (fetchedPages) => {
         setPages(fetchedPages);
-        // Load extraction history for all pages in parallel
-        const histories = await Promise.all(
-          fetchedPages.map((p) =>
-            api.getPageExtractionHistory(p.id).catch(() => [] as ExtractionRun[])
-          )
-        );
+        const historyMap = await api.getBulkExtractionHistory(selectedSpace || undefined)
+          .catch(() => ({} as Record<string, ExtractionRun[]>));
         const newRuns: Record<string, ExtractionRun> = {};
-        const newCompiled: Record<string, CompiledProductSummary[]> = {};
-        fetchedPages.forEach((p, i) => {
-          const pageRuns = histories[i]; // sorted desc by started_at
+        fetchedPages.forEach((p) => {
+          const pageRuns = historyMap[p.id] ?? [];
           if (pageRuns.length > 0) newRuns[p.id] = pageRuns[0];
-          // Collect all distinct products this page was compiled into
-          const seen = new Set<string>();
-          const products: CompiledProductSummary[] = [];
-          for (const run of pageRuns) {
-            if (run.compiled_product && !seen.has(run.compiled_product.product_key)) {
-              seen.add(run.compiled_product.product_key);
-              products.push(run.compiled_product);
-            }
-          }
-          if (products.length > 0) newCompiled[p.id] = products;
         });
         setRuns(newRuns);
-        setCompiledSummaries(newCompiled);
       })
       .catch((err) => {
         if (!redirectIfUnauthorized(err, router)) setError(String(err));
       });
-  }, [selectedSpace, router]);
+  }, [selectedSpace, router, spaces.length]);
 
   async function handleToggleContent(pageId: string) {
     const next = !expanded[pageId];
@@ -231,168 +291,128 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     }
   }
 
-  async function handleExtract(pageId: string) {
-    setExtracting((e) => ({ ...e, [pageId]: true }));
-    try {
-      const run = await api.extractPage(pageId);
-      setRuns((r) => ({ ...r, [pageId]: run }));
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setExtracting((e) => ({ ...e, [pageId]: false }));
-    }
-  }
-
-  async function handleCompile(pageId: string, runId: string) {
-    const form = compileForm[pageId] ?? { name: "", key: "", owner: "" };
-    if (!form.name || !form.key || !form.owner) {
-      setError("Fill in product name, key, and owner before compiling.");
-      return;
-    }
-    if (!user?.user_id) {
-      setError("Not logged in.");
-      return;
-    }
-    setCompiling((c) => ({ ...c, [pageId]: true }));
+  async function handleExtractAll() {
+    if (!pages) return;
+    setExtracting(true);
     setError(null);
-    try {
-      const product = await api.compileExtraction(runId, {
-        product_key: form.key,
-        name: form.name,
-        owner: form.owner,
-        created_by: user.user_id,
-      });
-      setCompiled((c) => ({ ...c, [pageId]: product }));
-      setCompiledSummaries((c) => {
-        const newEntry: CompiledProductSummary = {
-          product_id: product.id, product_key: product.product_key, name: product.name,
-          version_id: product.current_version.id, semver: product.current_version.semver,
-        };
-        const existing = (c[pageId] ?? []).filter((s) => s.product_key !== product.product_key);
-        return { ...c, [pageId]: [newEntry, ...existing] };
-      });
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setCompiling((c) => ({ ...c, [pageId]: false }));
-    }
-  }
-
-  function toggleSelect(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
-
-  function toggleSelectAll(filteredPages: ConfluencePage[]) {
-    if (filteredPages.every((p) => selectedIds.has(p.id))) {
-      // Deselect only the currently filtered pages, leave others intact
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        filteredPages.forEach((p) => next.delete(p.id));
-        return next;
-      });
-    } else {
-      setSelectedIds((prev) => new Set([...prev, ...filteredPages.map((p) => p.id)]));
-    }
-  }
-
-  async function handleBulkExtractCompile(filteredPages: ConfluencePage[]) {
-    if (!bulkProductKey || !bulkProductName || !bulkOwner) {
-      setError("Fill in Product Key, Product Name, and Owner before running bulk extract & compile.");
-      return;
-    }
-    if (!user?.user_id) { setError("Not logged in."); return; }
-    setBulkRunning(true);
-    setError(null);
-
-    // Phase 1: extract all pages, collect succeeded run IDs
-    const succeededRunIds: string[] = [];
-    for (const page of filteredPages) {
-      setBulkStatus((s) => ({ ...s, [page.id]: "extracting" }));
+    setCompileResult(null);
+    const toProcess = filtered; // respect current search filter
+    for (const page of toProcess) {
+      setPageStatus((s) => ({ ...s, [page.id]: "extracting" }));
       try {
-        const run = await api.extractPage(page.id);
+        const run = await api.smartExtractPage(page.id);
         setRuns((r) => ({ ...r, [page.id]: run }));
         if (run.status === "failed") {
-          setBulkStatus((s) => ({ ...s, [page.id]: "failed" }));
+          setPageStatus((s) => ({ ...s, [page.id]: "failed" }));
         } else {
-          succeededRunIds.push(run.id);
-          setBulkStatus((s) => ({ ...s, [page.id]: "extracted" }));
+          setPageStatus((s) => ({ ...s, [page.id]: run.reused ? "reused" : "extracted" }));
         }
       } catch {
-        setBulkStatus((s) => ({ ...s, [page.id]: "failed" }));
+        setPageStatus((s) => ({ ...s, [page.id]: "failed" }));
       }
     }
+    setExtracting(false);
+  }
 
-    if (succeededRunIds.length === 0) {
-      setError("All extractions failed — nothing to compile.");
-      setBulkRunning(false);
+  async function handleCompilePending() {
+    if (!selectedSpace) { setError("Select a space first."); return; }
+    if (!compileProductKey || !compileProductName || !compileOwner) {
+      setError("Fill in Product Key, Product Name, and Owner before compiling.");
+      return;
+    }
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!user?.user_id || !uuidPattern.test(user.user_id)) {
+      router.push("/login");
       return;
     }
 
-    // Phase 2: single batch-compile from all succeeded runs → one KP version
-    filteredPages.forEach((page) => {
-      setBulkStatus((s) => s[page.id] === "extracted" ? { ...s, [page.id]: "compiling" } : s);
-    });
+    setCompiling(true);
+    setError(null);
+    setCompileResult(null);
+
     try {
+      // Fetch which runs still need compile for this space
+      const pending = await api.getPendingCompileRuns(selectedSpace);
+      if (pending.length === 0) {
+        setError("No pages pending compile — all extracted pages are already up to date.");
+        setCompiling(false);
+        return;
+      }
+
+      // Mark each page as compiling
+      pending.forEach(({ page_id }) => {
+        setPageStatus((s) => ({ ...s, [page_id]: "compiling" }));
+      });
+
       const product = await api.batchCompile({
-        run_ids: succeededRunIds,
-        product_key: bulkProductKey,
-        name: bulkProductName,
-        owner: bulkOwner,
+        run_ids: pending.map((p) => p.run_id),
+        product_key: compileProductKey,
+        name: compileProductName,
+        owner: compileOwner,
         created_by: user.user_id,
       });
-      const newEntry: CompiledProductSummary = {
-        product_id: product.id, product_key: product.product_key, name: product.name,
-        version_id: product.current_version.id, semver: product.current_version.semver,
-      };
-      // Mark every successfully extracted page as compiled and update their summary
-      filteredPages.forEach((page) => {
-        setCompiled((c) => ({ ...c, [page.id]: product }));
-        setCompiledSummaries((cs) => {
-          const existing = (cs[page.id] ?? []).filter((s) => s.product_key !== product.product_key);
-          return { ...cs, [page.id]: [newEntry, ...existing] };
-        });
-        setBulkStatus((s) => s[page.id] !== "failed" ? { ...s, [page.id]: "compiled" } : s);
+
+      // Refresh history for all pages to get updated compile info
+      const historyMap = await api.getBulkExtractionHistory(selectedSpace).catch(() => ({} as Record<string, ExtractionRun[]>));
+      const newRuns: Record<string, ExtractionRun> = {};
+      (pages ?? []).forEach((p) => {
+        const pageRuns = historyMap[p.id] ?? [];
+        if (pageRuns.length > 0) newRuns[p.id] = pageRuns[0];
+      });
+      setRuns(newRuns);
+
+      pending.forEach(({ page_id }) => {
+        setPageStatus((s) => ({ ...s, [page_id]: "compiled" }));
+      });
+
+      setCompileResult({
+        product_key: product.product_key,
+        name: product.name,
+        semver: product.current_version.semver,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Batch compile failed");
-      filteredPages.forEach((page) => {
-        setBulkStatus((s) => s[page.id] === "compiling" ? { ...s, [page.id]: "failed" } : s);
+      setError(err instanceof ApiError ? err.message : "Compile failed");
+      // Revert compiling pages back to extracted
+      setPageStatus((s) => {
+        const next = { ...s };
+        Object.keys(next).forEach((id) => { if (next[id] === "compiling") next[id] = "failed"; });
+        return next;
       });
     }
-    setBulkRunning(false);
+    setCompiling(false);
   }
 
-  // Distinct products across all pages for the filter dropdown
-  const compiledProducts = Object.values(
-    Object.values(compiledSummaries).flat().reduce<Record<string, CompiledProductSummary>>((acc, s) => {
-      acc[s.product_key] = s;
-      return acc;
-    }, {})
-  ).sort((a, b) => a.name.localeCompare(b.name));
+  const filtered = (pages ?? []).filter((p) =>
+    !search || p.title.toLowerCase().includes(search.toLowerCase())
+  );
 
-  const filtered = (pages ?? []).filter((p) => {
-    if (search && !p.title.toLowerCase().includes(search.toLowerCase())) return false;
-    if (productFilter.size > 0) {
-      const pageProductKeys = (compiledSummaries[p.id] ?? []).map((s) => s.product_key);
-      if (productFilter.has("__uncompiled__") && pageProductKeys.length === 0) return true;
-      return pageProductKeys.some((k) => productFilter.has(k));
-    }
-    return true;
-  });
+  const pendingExtractCount = filtered.filter((p) => {
+    const run = runs[p.id];
+    return !run || run.status === "failed";
+  }).length;
+
+  const pendingCompileCount = filtered.filter((p) => {
+    const run = runs[p.id];
+    return run && run.status === "succeeded" && !run.compiled_at && !run.compile_status;
+  }).length;
 
   if (!pages) return <p className="text-sm text-gray-500">Loading pages...</p>;
 
   return (
     <>
-      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+
+      {compileResult && (
+        <div className="mb-4 rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900">
+          Compiled into <strong>{compileResult.name}</strong> — version <strong>{compileResult.semver}</strong>
+        </div>
+      )}
+
+      {/* Filters */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <select
           value={selectedSpace}
-          onChange={(e) => { setSelectedSpace(e.target.value); setProductFilter(new Set()); setSelectedIds(new Set()); }}
+          onChange={(e) => { setSelectedSpace(e.target.value); setSearch(""); }}
           className="rounded border border-gray-300 px-3 py-2 text-sm bg-white"
         >
           <option value="">All spaces</option>
@@ -400,284 +420,84 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
             <option key={s.id} value={s.space_key}>{s.name} ({s.space_key})</option>
           ))}
         </select>
-
-        {/* Multi-select product filter */}
-        <div className="relative" data-product-dropdown>
-          <button
-            onClick={() => setProductDropdownOpen((o) => !o)}
-            className="flex items-center gap-2 rounded border border-gray-300 px-3 py-2 text-sm bg-white hover:bg-gray-50 min-w-[160px]"
-          >
-            <span className="flex-1 text-left">
-              {productFilter.size === 0
-                ? "All products"
-                : productFilter.size === 1 && productFilter.has("__uncompiled__")
-                ? "Not compiled yet"
-                : productFilter.size === 1
-                ? compiledProducts.find((p) => productFilter.has(p.product_key))?.name ?? "1 product"
-                : `${productFilter.size} selected`}
-            </span>
-            <span className="text-gray-400 text-xs">▼</span>
-          </button>
-          {productDropdownOpen && (
-            <div className="absolute z-20 mt-1 left-0 min-w-[220px] rounded-lg border border-gray-200 bg-white shadow-lg py-1">
-              <label
-                className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 cursor-pointer border-b border-gray-100"
-                onClick={() => { setProductFilter(new Set()); setSelectedIds(new Set()); }}
-              >
-                <input type="checkbox" readOnly checked={productFilter.size === 0} className="rounded" />
-                All products
-              </label>
-              <label className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100">
-                <input
-                  type="checkbox"
-                  className="rounded"
-                  checked={productFilter.has("__uncompiled__")}
-                  onChange={() => {
-                    setProductFilter((prev) => {
-                      const next = new Set(prev);
-                      next.has("__uncompiled__") ? next.delete("__uncompiled__") : next.add("__uncompiled__");
-                      const ids = new Set(
-                        (pages ?? []).filter((p) => {
-                          const pageKeys = (compiledSummaries[p.id] ?? []).map((s) => s.product_key);
-                          if (next.has("__uncompiled__") && pageKeys.length === 0) return true;
-                          return pageKeys.some((k) => next.has(k));
-                        }).map((p) => p.id)
-                      );
-                      setSelectedIds(ids);
-                      return next;
-                    });
-                  }}
-                />
-                <span className="truncate text-gray-500 italic">Not compiled yet</span>
-              </label>
-              {compiledProducts.map((p) => (
-                <label key={p.product_key} className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="rounded"
-                    checked={productFilter.has(p.product_key)}
-                    onChange={() => {
-                      setProductFilter((prev) => {
-                        const next = new Set(prev);
-                        next.has(p.product_key) ? next.delete(p.product_key) : next.add(p.product_key);
-                        const ids = new Set(
-                          (pages ?? []).filter((p2) => {
-                            const pageKeys = (compiledSummaries[p2.id] ?? []).map((s) => s.product_key);
-                            if (next.has("__uncompiled__") && pageKeys.length === 0) return true;
-                            return pageKeys.some((k) => next.has(k));
-                          }).map((p2) => p2.id)
-                        );
-                        setSelectedIds(ids);
-                        return next;
-                      });
-                    }}
-                  />
-                  <span className="truncate">{p.name}</span>
-                </label>
-              ))}
-              {compiledProducts.length === 0 && (
-                <p className="px-3 py-2 text-xs text-gray-400">No compiled products yet</p>
-              )}
-            </div>
-          )}
-        </div>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search pages..."
           className="w-full max-w-xs rounded border border-gray-300 px-3 py-2 text-sm"
         />
-        <label className="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            className="rounded"
-            checked={filtered.length > 0 && filtered.every((p) => selectedIds.has(p.id))}
-            ref={(el) => {
-              if (el) el.indeterminate = selectedIds.size > 0 && !filtered.every((p) => selectedIds.has(p.id));
-            }}
-            onChange={() => toggleSelectAll(filtered)}
-          />
-          Select all
-        </label>
-        <span className="text-sm text-gray-500">
-          {selectedIds.size > 0 ? `${selectedIds.size} selected · ` : ""}{filtered.length} pages
-        </span>
+        <span className="text-sm text-gray-500">{filtered.length} pages</span>
       </div>
 
-      {isOwner && filtered.length > 0 && (
-        <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50 p-4">
-          <p className="text-sm font-medium text-blue-900 mb-3">Bulk Extract &amp; Compile</p>
-          <div className="flex flex-wrap gap-2 mb-3">
-            <input value={bulkProductKey} onChange={(e) => setBulkProductKey(e.target.value)}
-              placeholder="product-key" className="rounded border border-gray-300 px-2 py-1 text-xs w-36" />
-            <input value={bulkProductName} onChange={(e) => setBulkProductName(e.target.value)}
-              placeholder="Product name" className="rounded border border-gray-300 px-2 py-1 text-xs w-44" />
-            <input value={bulkOwner} onChange={(e) => setBulkOwner(e.target.value)}
-              placeholder="Owner" className="rounded border border-gray-300 px-2 py-1 text-xs w-32" />
-            <button
-              onClick={() => {
-                const target = selectedIds.size > 0
-                  ? filtered.filter((p) => selectedIds.has(p.id))
-                  : filtered;
-                handleBulkExtractCompile(target);
-              }}
-              disabled={bulkRunning}
-              className="rounded bg-blue-700 px-4 py-1 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50"
-            >
-              {bulkRunning ? "Processing..." : selectedIds.size > 0
-                ? `Extract & Compile ${selectedIds.size} selected`
-                : `Extract & Compile all ${filtered.length} pages`}
-            </button>
+      {/* Space-level action panel */}
+      {isOwner && selectedSpace && filtered.length > 0 && (
+        <div className="mb-5 rounded-lg border border-gray-200 bg-white p-4 space-y-4">
+          <div className="flex flex-wrap gap-3 items-center">
+            <div>
+              <p className="text-xs font-medium text-gray-700 mb-1">Step 1 — Extract</p>
+              <button
+                onClick={handleExtractAll}
+                disabled={extracting || compiling}
+                className="rounded bg-gray-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-gray-700 disabled:opacity-50"
+              >
+                {extracting ? "Extracting…" : `Extract All ${filtered.length} Pages`}
+              </button>
+              {pendingExtractCount > 0 && !extracting && (
+                <p className="mt-1 text-xs text-amber-700">{pendingExtractCount} page{pendingExtractCount !== 1 ? "s" : ""} not yet extracted</p>
+              )}
+            </div>
+            <div className="w-px h-10 bg-gray-200 hidden sm:block" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-gray-700 mb-1">Step 2 — Compile Pending Pages → KP</p>
+              <div className="flex flex-wrap gap-2 items-center">
+                <input
+                  value={compileProductKey}
+                  onChange={(e) => setCompileProductKey(e.target.value)}
+                  onBlur={() => {
+                    const match = productIndex[compileProductKey.trim()];
+                    if (match) {
+                      if (!compileProductName) setCompileProductName(match.name);
+                      if (!compileOwner) setCompileOwner(match.owner);
+                    }
+                  }}
+                  placeholder="product-key"
+                  className="rounded border border-gray-300 px-2 py-1 text-xs w-32"
+                />
+                <input value={compileProductName} onChange={(e) => setCompileProductName(e.target.value)}
+                  placeholder="Product name" className="rounded border border-gray-300 px-2 py-1 text-xs w-40" />
+                <input value={compileOwner} onChange={(e) => setCompileOwner(e.target.value)}
+                  placeholder="Owner" className="rounded border border-gray-300 px-2 py-1 text-xs w-28" />
+                <button
+                  onClick={handleCompilePending}
+                  disabled={extracting || compiling}
+                  className="rounded bg-blue-700 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50"
+                >
+                  {compiling ? "Compiling…" : `Compile Pending (${pendingCompileCount})`}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-400">Only compiles pages with new extractions since last compile.</p>
+            </div>
           </div>
-          <p className="text-xs text-blue-700">Pages processed one at a time. LLM merges each page into the same product.</p>
         </div>
       )}
 
+      {/* Page list */}
       <div className="space-y-3">
         {filtered.map((page) => {
           const run = runs[page.id];
-          const summaries = compiledSummaries[page.id] ?? [];
-          const bStatus = bulkStatus[page.id];
-          const form = compileForm[page.id] ?? { name: page.title, key: page.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40), owner: user?.display_name ?? "" };
-
+          const status = pageStatus[page.id];
           return (
-            <div key={page.id} className={`rounded-lg border bg-white p-4 ${selectedIds.has(page.id) ? "border-blue-300 ring-1 ring-blue-200" : "border-gray-200"}`}>
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 rounded cursor-pointer"
-                    checked={selectedIds.has(page.id)}
-                    onChange={() => toggleSelect(page.id)}
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">{page.title}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      {page.space_key} · v{page.confluence_version} · {new Date(page.last_modified_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {bStatus && (
-                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                      bStatus === "compiled" ? "bg-green-100 text-green-800" :
-                      bStatus === "failed" ? "bg-red-100 text-red-800" :
-                      bStatus === "extracting" || bStatus === "compiling" ? "bg-yellow-100 text-yellow-800" :
-                      "bg-blue-100 text-blue-800"
-                    }`}>
-                      {bStatus === "extracting" ? "Extracting..." :
-                       bStatus === "extracted" ? "Extracted" :
-                       bStatus === "compiling" ? "Compiling..." :
-                       bStatus === "compiled" ? "Compiled" : "Failed"}
-                    </span>
-                  )}
-                  <button
-                    onClick={() => handleToggleContent(page.id)}
-                    className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-50"
-                  >
-                    {expanded[page.id] ? "▲ Hide" : "▼ Content"}
-                  </button>
-                  {isOwner && !run && !bStatus && (
-                    <button
-                      onClick={() => handleExtract(page.id)}
-                      disabled={extracting[page.id]}
-                      className="rounded border border-gray-300 px-3 py-1 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
-                    >
-                      {extracting[page.id] ? "Extracting..." : "Extract"}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {expanded[page.id] && (
-                <div className="mt-3 border-t border-gray-100 pt-3">
-                  {loadingDetail[page.id] ? (
-                    <p className="text-xs text-gray-400">Loading content...</p>
-                  ) : pageDetails[page.id] === null ? (
-                    <p className="text-xs text-red-500">Failed to load content.</p>
-                  ) : pageDetails[page.id] ? (
-                    <pre className="whitespace-pre-wrap text-xs text-gray-700 font-sans leading-relaxed max-h-64 overflow-y-auto">
-                      {pageDetails[page.id]!.plain_text || "(no text content)"}
-                    </pre>
-                  ) : null}
-                </div>
-              )}
-
-              {run && (
-                <div className="mt-3 border-t border-gray-100 pt-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${
-                      run.status === "succeeded" ? "bg-green-100 text-green-800" :
-                      run.status === "failed" ? "bg-red-100 text-red-800" :
-                      "bg-yellow-100 text-yellow-800"
-                    }`}>
-                      {run.status}
-                    </span>
-                    <span className="text-xs text-gray-400">{run.llm_model}</span>
-                    {run.started_at && (
-                      <span className="text-xs text-gray-400">
-                        · {new Date(run.started_at).toLocaleString()}
-                      </span>
-                    )}
-                  </div>
-
-                  {run.status === "failed" && run.error_message && (
-                    <p className="mt-1 text-xs text-red-600">{run.error_message}</p>
-                  )}
-
-                  {run.status === "succeeded" && summaries.length === 0 && !bStatus && (
-                    <div className="mt-3 space-y-2">
-                      <p className="text-xs font-medium text-gray-700">Compile into Knowledge Product</p>
-                      <div className="grid grid-cols-3 gap-2">
-                        <input
-                          value={form.name}
-                          onChange={(e) => setCompileForm((f) => ({ ...f, [page.id]: { ...form, name: e.target.value } }))}
-                          placeholder="Product name"
-                          className="rounded border border-gray-300 px-2 py-1 text-xs"
-                        />
-                        <input
-                          value={form.key}
-                          onChange={(e) => setCompileForm((f) => ({ ...f, [page.id]: { ...form, key: e.target.value } }))}
-                          placeholder="product-key"
-                          className="rounded border border-gray-300 px-2 py-1 text-xs"
-                        />
-                        <input
-                          value={form.owner}
-                          onChange={(e) => setCompileForm((f) => ({ ...f, [page.id]: { ...form, owner: e.target.value } }))}
-                          placeholder="Owner"
-                          className="rounded border border-gray-300 px-2 py-1 text-xs"
-                        />
-                      </div>
-                      <button
-                        onClick={() => handleCompile(page.id, run.id)}
-                        disabled={compiling[page.id]}
-                        className="rounded bg-gray-900 px-3 py-1 text-xs font-medium text-white hover:bg-gray-700 disabled:opacity-50"
-                      >
-                        {compiling[page.id] ? "Compiling..." : "Compile → Knowledge Product"}
-                      </button>
-                    </div>
-                  )}
-
-                  {summaries.length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-xs text-gray-500 font-medium mb-1">Compiled into:</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {summaries.map((s) => (
-                          <button
-                            key={s.product_key}
-                            onClick={() => router.push(`/products/${s.product_id}`)}
-                            className="inline-flex items-center gap-1 rounded-full bg-green-50 border border-green-200 px-2.5 py-0.5 text-xs text-green-800 hover:bg-green-100"
-                          >
-                            {s.name}
-                            <span className="text-green-500">v{s.semver}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            <PageCard
+              key={page.id}
+              page={page}
+              run={run ?? null}
+              status={status ?? "idle"}
+              expanded={!!expanded[page.id]}
+              loadingDetail={!!loadingDetail[page.id]}
+              pageDetail={pageDetails[page.id] ?? null}
+              onToggleContent={() => handleToggleContent(page.id)}
+              onNavigate={(id) => router.push(`/products/${id}`)}
+            />
           );
         })}
 
@@ -688,6 +508,172 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
         )}
       </div>
     </>
+  );
+}
+
+function statusBadge(status: string) {
+  const map: Record<string, string> = {
+    succeeded: "bg-green-100 text-green-800",
+    failed: "bg-red-100 text-red-800",
+    running: "bg-yellow-100 text-yellow-800",
+    pending: "bg-gray-100 text-gray-700",
+    extracting: "bg-yellow-100 text-yellow-800",
+    extracted: "bg-blue-100 text-blue-800",
+    reused: "bg-purple-100 text-purple-800",
+    compiling: "bg-yellow-100 text-yellow-800",
+    compiled: "bg-green-100 text-green-800",
+  };
+  return map[status] ?? "bg-gray-100 text-gray-600";
+}
+
+function fmt(iso: string | null | undefined) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function shortId(id: string) {
+  return id.slice(0, 8) + "…";
+}
+
+interface PageCardProps {
+  page: ConfluencePage;
+  run: ExtractionRun | null;
+  status: PageStatus;
+  expanded: boolean;
+  loadingDetail: boolean;
+  pageDetail: ConfluencePageDetail | null;
+  onToggleContent: () => void;
+  onNavigate: (productId: string) => void;
+}
+
+function PageCard({ page, run, status, expanded, loadingDetail, pageDetail, onToggleContent, onNavigate }: PageCardProps) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium text-gray-900">{page.title}</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {page.space_key} · Page v{page.confluence_version} · modified {fmt(page.last_modified_at)}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {status !== "idle" && (
+            <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusBadge(status)}`}>
+              {status === "extracting" ? "Extracting…" :
+               status === "extracted" ? "Extracted" :
+               status === "reused" ? "Reused (cached)" :
+               status === "compiling" ? "Compiling…" :
+               status === "compiled" ? "Compiled" : "Failed"}
+            </span>
+          )}
+          <button
+            onClick={onToggleContent}
+            className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-50"
+          >
+            {expanded ? "▲ Hide" : "▼ Content"}
+          </button>
+        </div>
+      </div>
+
+      {/* Page content preview */}
+      {expanded && (
+        <div className="mt-3 border-t border-gray-100 pt-3">
+          {loadingDetail ? (
+            <p className="text-xs text-gray-400">Loading content…</p>
+          ) : pageDetail === null ? (
+            <p className="text-xs text-red-500">Failed to load content.</p>
+          ) : pageDetail ? (
+            <pre className="whitespace-pre-wrap text-xs text-gray-700 font-sans leading-relaxed max-h-48 overflow-y-auto">
+              {pageDetail.plain_text || "(no text content)"}
+            </pre>
+          ) : null}
+        </div>
+      )}
+
+      {/* Extraction + Compile info boxes */}
+      {run && (
+        <div className="mt-3 border-t border-gray-100 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Extraction box */}
+          <div className="rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs space-y-1">
+            <p className="font-medium text-gray-700 text-[11px] uppercase tracking-wide">Last Extraction</p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className={`rounded px-1.5 py-0.5 font-medium ${statusBadge(run.status)}`}>{run.status}</span>
+              <span className="text-gray-500 font-mono">{shortId(run.id)}</span>
+            </div>
+            <p className="text-gray-500">{fmt(run.started_at)}</p>
+            {run.status === "failed" && run.error_message && (
+              <p className="text-red-600 mt-1 break-words">{run.error_message}</p>
+            )}
+          </div>
+
+          {/* Compile box */}
+          <CompileBox run={run} onNavigate={onNavigate} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompileBox({ run, onNavigate }: { run: ExtractionRun; onNavigate: (id: string) => void }) {
+  const hasAnyCompile = run.compile_status || run.compiled_at;
+  const latestSucceeded = run.compile_status === "succeeded";
+  const latestFailed = run.compile_status === "failed";
+  const neverCompiled = !hasAnyCompile;
+
+  const compiledProduct = run.compiled_product;
+  const prevProduct = run.prev_compiled_product;
+
+  return (
+    <div className="rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs space-y-1">
+      <p className="font-medium text-gray-700 text-[11px] uppercase tracking-wide">Compile Status</p>
+
+      {neverCompiled && (
+        <p className="text-gray-400 italic">Not yet compiled</p>
+      )}
+
+      {latestSucceeded && compiledProduct && (
+        <>
+          <div className="flex items-center gap-1.5">
+            <span className="rounded px-1.5 py-0.5 font-medium bg-green-100 text-green-800">succeeded</span>
+            <button
+              onClick={() => onNavigate(compiledProduct.product_id)}
+              className="text-blue-600 hover:underline font-medium"
+            >
+              {compiledProduct.name} v{compiledProduct.semver}
+            </button>
+          </div>
+          <p className="text-gray-500">{fmt(run.compiled_at)}</p>
+        </>
+      )}
+
+      {latestFailed && (
+        <>
+          <div className="flex items-center gap-1.5">
+            <span className="rounded px-1.5 py-0.5 font-medium bg-red-100 text-red-800">failed</span>
+            <span className="text-red-600">{fmt(run.compiled_at)}</span>
+          </div>
+          {run.compile_error && (
+            <p className="text-red-600 break-words">{run.compile_error}</p>
+          )}
+          {prevProduct && (
+            <div className="mt-2 border-t border-gray-200 pt-2">
+              <p className="text-gray-500 text-[11px]">Previously compiled:</p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="rounded px-1.5 py-0.5 font-medium bg-green-100 text-green-800">succeeded</span>
+                <button
+                  onClick={() => onNavigate(prevProduct.product_id)}
+                  className="text-blue-600 hover:underline"
+                >
+                  {prevProduct.name} v{prevProduct.semver}
+                </button>
+              </div>
+              <p className="text-gray-500">{fmt(run.prev_compiled_at)}</p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,9 +44,14 @@ class SqlAlchemyConfluenceSpaceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_spaces(self) -> list[ConfluenceSpace]:
-        rows = (await self._session.execute(select(ConfluenceSpaceModel))).scalars().all()
-        return [_space_to_domain(row) for row in rows]
+    async def list_spaces(self) -> list[tuple[ConfluenceSpaceModel, int]]:
+        stmt = (
+            select(ConfluenceSpaceModel, func.count(ConfluencePageModel.id).label("page_count"))
+            .outerjoin(ConfluencePageModel, ConfluencePageModel.space_id == ConfluenceSpaceModel.id)
+            .group_by(ConfluenceSpaceModel.id)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [(row[0], row[1]) for row in rows]
 
     async def get_by_key(self, space_key: str) -> ConfluenceSpace | None:
         row = (
@@ -63,10 +68,15 @@ class SqlAlchemyConfluenceSpaceRepository:
         await self._session.flush()
         return _space_to_domain(row)
 
-    async def mark_synced(self, space_id: uuid.UUID) -> None:
+    async def mark_synced(
+        self, space_id: uuid.UUID, *, created: int = 0, updated: int = 0, skipped: int = 0
+    ) -> None:
         row = await self._session.get(ConfluenceSpaceModel, space_id)
         if row is not None:
             row.last_synced_at = utc_now()
+            row.last_sync_created = created
+            row.last_sync_updated = updated
+            row.last_sync_skipped = skipped
             await self._session.flush()
             await self._session.commit()
 

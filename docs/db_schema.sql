@@ -30,6 +30,9 @@ CREATE TABLE confluence_space (
     name            TEXT NOT NULL,
     base_url        TEXT NOT NULL,
     last_synced_at  TIMESTAMPTZ,
+    last_sync_created INTEGER,
+    last_sync_updated INTEGER,
+    last_sync_skipped INTEGER,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -71,7 +74,11 @@ CREATE TABLE extraction_run (
     structured_draft JSONB,                          -- raw extracted components before compilation
     error_message   TEXT,
     started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at    TIMESTAMPTZ
+    completed_at    TIMESTAMPTZ,
+    compiled_at         TIMESTAMPTZ,
+    compiled_version_id UUID REFERENCES knowledge_product_version(id),
+    compile_status      TEXT,                         -- 'succeeded' | 'failed'
+    compile_error       TEXT
 );
 
 CREATE INDEX ix_extraction_run_page ON extraction_run(page_id);

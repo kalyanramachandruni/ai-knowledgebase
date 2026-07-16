@@ -81,7 +81,7 @@ class SyncConfluenceSpaceUseCase:
             else:
                 updated += 1
 
-        await self._space_repository.mark_synced(space.id)
+        await self._space_repository.mark_synced(space.id, created=created, updated=updated, skipped=skipped)
 
         return SyncSpaceResult(
             space_key=payload.space_key,

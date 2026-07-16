@@ -23,6 +23,12 @@ class ConfluenceSpaceResponse(BaseModel):
     id: uuid.UUID
     space_key: str
     name: str
+    base_url: str
+    last_synced_at: datetime | None = None
+    page_count: int = 0
+    last_sync_created: int | None = None
+    last_sync_updated: int | None = None
+    last_sync_skipped: int | None = None
 
 
 class ConfluencePageResponse(BaseModel):

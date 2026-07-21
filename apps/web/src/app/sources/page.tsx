@@ -242,6 +242,7 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
   const [compileOwner, setCompileOwner] = useState("");
   const [productIndex, setProductIndex] = useState<Record<string, { name: string; owner: string }>>({});
   const [compileResult, setCompileResult] = useState<{ product_key: string; name: string; semver: string } | null>(null);
+  const [forceCompileAll, setForceCompileAll] = useState(false);
 
   useEffect(() => {
     api.listConfluenceSpaces().then(setSpaces).catch(() => {});
@@ -331,8 +332,17 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     setCompileResult(null);
 
     try {
-      // Fetch which runs still need compile for this space
-      const pending = await api.getPendingCompileRuns(selectedSpace);
+      // When force-compile is on, collect all succeeded runs from local state;
+      // otherwise fetch only runs not yet compiled from the API.
+      let pending: Array<{ page_id: string; run_id: string }>;
+      if (forceCompileAll) {
+        pending = filtered
+          .filter((p) => runs[p.id]?.status === "succeeded")
+          .map((p) => ({ page_id: p.id, run_id: runs[p.id].id }));
+      } else {
+        pending = await api.getPendingCompileRuns(selectedSpace);
+      }
+
       if (pending.length === 0) {
         setError("No pages pending compile — all extracted pages are already up to date.");
         setCompiling(false);
@@ -396,6 +406,13 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     return run && run.status === "succeeded" && !run.compiled_at && !run.compile_status;
   }).length;
 
+  const allSucceededCount = filtered.filter((p) => {
+    const run = runs[p.id];
+    return run && run.status === "succeeded";
+  }).length;
+
+  const compileCount = forceCompileAll ? allSucceededCount : pendingCompileCount;
+
   if (!pages) return <p className="text-sm text-gray-500">Loading pages...</p>;
 
   return (
@@ -448,7 +465,7 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
             </div>
             <div className="w-px h-10 bg-gray-200 hidden sm:block" />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-gray-700 mb-1">Step 2 — Compile Pending Pages → KP</p>
+              <p className="text-xs font-medium text-gray-700 mb-1">Step 2 — Compile Pages → KP</p>
               <div className="flex flex-wrap gap-2 items-center">
                 <input
                   value={compileProductKey}
@@ -470,12 +487,27 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
                 <button
                   onClick={handleCompilePending}
                   disabled={extracting || compiling}
-                  className="rounded bg-blue-700 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-50"
+                  className={`rounded px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${forceCompileAll ? "bg-orange-600 hover:bg-orange-700" : "bg-blue-700 hover:bg-blue-800"}`}
                 >
-                  {compiling ? "Compiling…" : `Compile Pending (${pendingCompileCount})`}
+                  {compiling ? "Compiling…" : `Compile${forceCompileAll ? " All" : " Pending"} (${compileCount})`}
                 </button>
               </div>
-              <p className="mt-1 text-xs text-gray-400">Only compiles pages with new extractions since last compile.</p>
+              <div className="mt-2 flex items-center gap-2">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={forceCompileAll}
+                    onChange={(e) => setForceCompileAll(e.target.checked)}
+                    className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                  />
+                  <span className="text-xs text-gray-600">Compile All — force recompile all extracted pages in current scope</span>
+                </label>
+              </div>
+              <p className="mt-1 text-xs text-gray-400">
+                {forceCompileAll
+                  ? `Force recompiling all ${allSucceededCount} extracted page${allSucceededCount !== 1 ? "s" : ""} in current scope.`
+                  : "Only compiles pages with new extractions since last compile."}
+              </p>
             </div>
           </div>
         </div>

@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
 
+    # Azure AI Foundry (Azure OpenAI Service)
+    azure_openai_endpoint: str = ""      # e.g. https://<resource>.openai.azure.com
+    azure_openai_api_key: str = ""
+    azure_openai_api_version: str = "2025-01-01-preview"
+    azure_openai_deployment: str = ""    # deployment name in Azure AI Foundry
+
     # base_url is the OAuth2 gateway root including /wiki/rest/api, e.g.
     # https://api.atlassian.com/ex/confluence/{cloudId}/wiki/rest/api
     confluence_base_url: str = ""

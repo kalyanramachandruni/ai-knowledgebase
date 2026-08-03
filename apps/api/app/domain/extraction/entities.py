@@ -15,13 +15,41 @@ class ExtractionStatus(str, Enum):
     FAILED = "failed"
 
 
+class PageSourceType(str, Enum):
+    CONFLUENCE = "confluence"
+    WEB = "web"
+
+
 @dataclass
-class ExtractionRun(Entity):
-    page_id: uuid.UUID = field(default_factory=uuid.uuid4)
+class ExtractionSession(Entity):
+    """Session-level metadata for an extraction run (provider, model, timing)."""
     llm_provider: str = ""
     llm_model: str = ""
     status: ExtractionStatus = ExtractionStatus.PENDING
-    structured_draft: dict | None = None
-    error_message: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+@dataclass
+class ExtractionRun(Entity):
+    """
+    Flat projection of extraction_session_entry + extraction_session
+    (+ optional latest compile outcome from compile_session_entry).
+    The repository joins the tables so callers always get a single flat object.
+    """
+    session_id: uuid.UUID | None = None
+    page_id: uuid.UUID | None = None
+    page_source_type: PageSourceType | None = None
+    status: ExtractionStatus = ExtractionStatus.PENDING
+    structured_draft: dict | None = None
+    error_message: str | None = None
+    # From extraction_session (joined):
+    llm_provider: str = ""
+    llm_model: str = ""
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    # Latest compile outcome (joined from compile_session_entry → compile_session):
+    compiled_at: datetime | None = None
+    compile_status: str | None = None
+    compile_error: str | None = None
+    compiled_version_id: uuid.UUID | None = None

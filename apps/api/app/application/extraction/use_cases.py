@@ -6,7 +6,7 @@ import uuid
 from app.application.extraction.exceptions import ConfluencePageNotFound
 from app.application.extraction.html import strip_storage_format
 from app.domain.confluence.repository import ConfluencePageRepository
-from app.domain.extraction.entities import ExtractionRun, ExtractionStatus
+from app.domain.extraction.entities import ExtractionRun, ExtractionStatus, PageSourceType
 from app.domain.extraction.events import ExtractionFailed, KnowledgeExtracted
 from app.domain.extraction.ports import LLMExtractionPort
 from app.domain.extraction.repository import ExtractionRunRepository
@@ -44,6 +44,7 @@ class ExtractKnowledgeFromPageUseCase:
 
         run = ExtractionRun(
             page_id=page_id,
+            page_source_type=PageSourceType.CONFLUENCE,
             llm_provider=self._llm_provider,
             llm_model=self._llm_model,
             status=ExtractionStatus.RUNNING,

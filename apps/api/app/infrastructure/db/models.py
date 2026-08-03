@@ -70,27 +70,91 @@ class ConfluenceAttachment(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class ExtractionRun(Base):
-    __tablename__ = "extraction_run"
+class WebSource(Base):
+    __tablename__ = "web_source"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    page_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("confluence_page.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    root_url: Mapped[str] = mapped_column(String, nullable=False)
+    last_crawled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_crawl_created: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_crawl_updated: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_crawl_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    pages: Mapped[list["WebPage"]] = relationship(back_populates="source")
+
+
+class WebPage(Base):
+    __tablename__ = "web_page"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("web_source.id", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(String, nullable=False, unique=False)
+    title: Mapped[str] = mapped_column(String, nullable=False, default="Untitled")
+    plain_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    source: Mapped["WebSource"] = relationship(back_populates="pages")
+
+    __table_args__ = (UniqueConstraint("source_id", "url"),)
+
+
+class WebPageLink(Base):
+    """Links discovered on a web page during crawl."""
+    __tablename__ = "web_page_link"
+    __table_args__ = (UniqueConstraint("source_page_id", "url"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_page_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("web_page.id", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set when the linked URL has been crawled into web_page
+    linked_page_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("web_page.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExtractionSession(Base):
+    """Session-level metadata: one LLM call context that may cover one or more pages."""
+    __tablename__ = "extraction_session"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    llm_provider: Mapped[str] = mapped_column(String, nullable=False)
+    llm_model: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(
         Enum("pending", "running", "succeeded", "failed", name="extraction_status"),
         default="pending",
     )
-    llm_provider: Mapped[str] = mapped_column(String, nullable=False)
-    llm_model: Mapped[str] = mapped_column(String, nullable=False)
-    structured_draft: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    compiled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    compiled_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("knowledge_product_version.id"), nullable=True
+
+    entries: Mapped[list["ExtractionSessionEntry"]] = relationship(
+        "ExtractionSessionEntry", back_populates="session_obj", cascade="all, delete-orphan"
     )
-    compile_status: Mapped[str | None] = mapped_column(String, nullable=True)
-    compile_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ExtractionSessionEntry(Base):
+    """Per-page extraction result within a session."""
+    __tablename__ = "extraction_session_entry"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("extraction_session.id", ondelete="CASCADE"), nullable=False
+    )
+    # page_id points to either confluence_page.id or web_page.id depending on page_source_type
+    page_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    page_source_type: Mapped[str | None] = mapped_column(
+        Enum("confluence", "web", name="page_source_type_enum"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        Enum("pending", "running", "succeeded", "failed", name="extraction_status"),
+        default="pending",
+    )
+    structured_draft: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    session_obj: Mapped["ExtractionSession"] = relationship("ExtractionSession", back_populates="entries")
 
 
 class KnowledgeProductModel(Base):
@@ -124,8 +188,8 @@ class KnowledgeProductVersionModel(Base):
         default="draft",
     )
     yaml_content: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    source_extraction_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("extraction_run.id"), nullable=True
+    source_extraction_entry_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("extraction_session_entry.id"), nullable=True
     )
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_user.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -198,3 +262,38 @@ class Document(Base):
         backref=__import__("sqlalchemy.orm", fromlist=["backref"]).backref("parent", remote_side="Document.id"),
         foreign_keys=[parent_id],
     )
+
+
+class CompileSession(Base):
+    __tablename__ = "compile_session"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_product_version.id", ondelete="CASCADE"), nullable=False)
+    knowledge_product_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("knowledge_product.id", ondelete="SET NULL"), nullable=True)
+    product_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    llm_provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)  # running | succeeded | failed
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_user.id"), nullable=True)
+
+    entries: Mapped[list["CompileSessionEntry"]] = relationship("CompileSessionEntry", back_populates="session", cascade="all, delete-orphan")
+
+
+class CompileSessionEntry(Base):
+    __tablename__ = "compile_session_entry"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("compile_session.id", ondelete="CASCADE"), nullable=False)
+    entry_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("extraction_session_entry.id"), nullable=True)
+    # page_id mirrors extraction_session_entry.page_id — same polymorphic UUID, no FK constraint
+    page_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    page_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)   # compiled | discarded | skipped
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compiled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    session: Mapped["CompileSession"] = relationship("CompileSession", back_populates="entries")

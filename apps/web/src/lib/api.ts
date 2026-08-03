@@ -5,7 +5,10 @@ import type {
   ApprovalRequest,
   KnowledgeProduct,
   KnowledgeProductSummary,
+  CompiledPageSession,
   VersionDiff,
+  WebSource,
+  WebPage,
 } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -79,6 +82,9 @@ export const api = {
 
   compareVersions: (id: string, fromId: string, toId: string) =>
     request<VersionDiff>(`/knowledge-products/${id}/versions/${fromId}/diff/${toId}`),
+
+  getCompiledPages: (productId: string, versionId: string) =>
+    request<CompiledPageSession[]>(`/knowledge-products/${productId}/versions/${versionId}/compiled-pages`),
 
   submitForReview: (productId: string, versionId: string, actorId: string) =>
     request<KnowledgeProduct>(
@@ -237,4 +243,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ ...payload, bump: "minor" }),
     }),
+
+  // Web sources
+  listWebSources: () => request<WebSource[]>("/web-sources"),
+
+  createWebSource: (name: string, root_url: string) =>
+    request<WebSource>("/web-sources", {
+      method: "POST",
+      body: JSON.stringify({ name, root_url }),
+    }),
+
+  deleteWebSource: (id: string) =>
+    request<void>(`/web-sources/${id}`, { method: "DELETE" }),
+
+  listWebPages: (sourceId: string) =>
+    request<WebPage[]>(`/web-sources/${sourceId}/pages`),
+
+  extractWebPage: (sourceId: string, pageId: string) =>
+    request<{ run_id: string; status: string; error_message: string | null }>(
+      `/web-sources/${sourceId}/pages/${pageId}/extract`,
+      { method: "POST" }
+    ),
+
+  listWebPageLinks: (sourceId: string, pageId: string) =>
+    request<import("@/lib/types").WebPageLink[]>(`/web-sources/${sourceId}/pages/${pageId}/links`),
+
+  getExtractionRun: (runId: string) =>
+    request<import("@/lib/types").ExtractionRun>(`/extraction-runs/${runId}`),
 };

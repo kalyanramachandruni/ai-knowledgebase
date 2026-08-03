@@ -30,6 +30,10 @@ Do NOT include internal code class names, Apex trigger names, API method names, 
 **escalations** — `trigger` should describe what causes the escalation (time elapsed such as "90m", a condition, or event). \
 Include `action` describing what the escalated party should do.
 
+**page_tags** — Assign up to 5 short topic tags that classify the key subject areas of this page within a \
+postal and logistics context. Only use tags clearly supported by the content. Return an empty list if the \
+page has no substantive content (e.g. navigation-only pages).
+
 Only extract what is explicitly stated or strongly implied by the text. Do not invent content. \
 If a field isn't present, return null or an empty list."""
 
@@ -43,9 +47,11 @@ Knowledge Product using the `extract_knowledge` tool.
 Follow these rules:
 - **process_overview**: Synthesize both summaries into one that accurately covers the combined scope. \
   Combine trigger and outcome statements if they differ.
-- **process_steps**: Combine into a single ordered list; remove exact duplicates; order logically. \
-  Preserve all descriptive detail (`description`, `responsible_role`, `inputs`, `outputs`). \
-  If the same step appears in both with different detail, keep the more complete version.
+- **process_steps**: Combine into a single ordered list. Remove only exact duplicates (identical name AND \
+  identical description). If the same step name appears with different descriptions or detail, keep BOTH \
+  (rename one to distinguish if needed). Err strongly on the side of inclusion — it is better to have \
+  more steps than to silently discard steps that may represent different contexts or sub-processes. \
+  Preserve all descriptive detail (`description`, `responsible_role`, `inputs`, `outputs`).
 - **rules and policies**: Keep all distinct rules; if two are semantically equivalent keep only the clearer, \
   more complete one (prefer the one with rationale).
 - **roles**: Union of both sets. Keep only business roles — discard individual names or metadata fields.

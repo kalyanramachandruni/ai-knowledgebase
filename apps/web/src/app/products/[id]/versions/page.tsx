@@ -7,7 +7,112 @@ import { NavBar } from "@/components/NavBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { api } from "@/lib/api";
 import { getToken, redirectIfUnauthorized } from "@/lib/auth";
-import type { KnowledgeProductVersion, VersionDiff } from "@/lib/types";
+import type { CompiledPageSession, KnowledgeProductVersion, VersionDiff } from "@/lib/types";
+
+function fmt(iso: string | null) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function CompiledPagesPanel({ productId, versionId }: { productId: string; versionId: string }) {
+  const [sessions, setSessions] = useState<CompiledPageSession[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    api.getCompiledPages(productId, versionId)
+      .then(setSessions)
+      .catch((e) => setError(String(e)));
+  }, [productId, versionId]);
+
+  if (error) return <p className="mt-2 text-xs text-red-500">{error}</p>;
+  if (!sessions) return <p className="mt-2 text-xs text-gray-400">Loading…</p>;
+  if (sessions.length === 0) return <p className="mt-2 text-xs text-gray-400 italic">No pages compiled into this version.</p>;
+
+  const totalPages = sessions.reduce((n, s) => n + s.pages.length, 0);
+
+  return (
+    <div className="mt-3 border-t border-gray-100 pt-3">
+      <p className="text-xs font-medium text-gray-500 mb-2">
+        {totalPages} page{totalPages !== 1 ? "s" : ""} across {sessions.length} compile session{sessions.length !== 1 ? "s" : ""}
+      </p>
+      <div className="space-y-2">
+        {sessions.map((session, si) => {
+          const isOpen = expandedSessions.has(session.session_id);
+          return (
+            <div key={session.session_id} className="rounded border border-gray-200 bg-gray-50">
+              <button
+                className="flex w-full items-center justify-between px-3 py-2 text-left"
+                onClick={() => setExpandedSessions((prev) => {
+                  const next = new Set(prev);
+                  if (isOpen) next.delete(session.session_id);
+                  else next.add(session.session_id);
+                  return next;
+                })}
+              >
+                <span className="text-xs font-medium text-gray-700">
+                  Session {si + 1}{session.product_name ? ` — ${session.product_name}` : ""} — {fmt(session.created_at)}
+                </span>
+                <span className="flex items-center gap-2 text-xs text-gray-400">
+                  {session.pages.length} page{session.pages.length !== 1 ? "s" : ""}
+                  <span>{isOpen ? "▲" : "▼"}</span>
+                </span>
+              </button>
+
+              {isOpen && (
+                <div className="border-t border-gray-200 overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-100 text-gray-500 text-left">
+                        <th className="px-3 py-1.5 font-medium">Status</th>
+                        <th className="px-3 py-1.5 font-medium">Page title</th>
+                        <th className="px-3 py-1.5 font-medium">Page ID</th>
+                        <th className="px-3 py-1.5 font-medium">Run ID</th>
+                        <th className="px-3 py-1.5 font-medium">Compiled at</th>
+                        <th className="px-3 py-1.5 font-medium">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {session.pages.map((page, pi) => {
+                        const isDiscarded = page.status !== "compiled";
+                        return (
+                          <tr key={page.run_id ?? pi} className={isDiscarded ? "bg-gray-50 opacity-60" : "bg-white hover:bg-gray-50"}>
+                            <td className="px-3 py-1.5 whitespace-nowrap">
+                              {page.status === "compiled" && (
+                                <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">Compiled</span>
+                              )}
+                              {page.status === "discarded" && (
+                                <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">Discarded</span>
+                              )}
+                              {page.status === "skipped" && (
+                                <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">Failed</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 font-medium text-gray-800 max-w-[200px] truncate" title={page.title ?? ""}>
+                              {page.title || "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-gray-400 font-mono" title={page.page_id ?? ""}>{page.page_id ? `${page.page_id.slice(0, 8)}…` : "—"}</td>
+                            <td className="px-3 py-1.5 text-gray-400 font-mono" title={page.run_id ?? ""}>
+                              {page.run_id ? `${page.run_id.slice(0, 8)}…` : "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-gray-500 whitespace-nowrap">{fmt(page.compiled_at)}</td>
+                            <td className="px-3 py-1.5 text-gray-400 max-w-[180px] truncate" title={page.reason ?? ""}>
+                              {page.reason ?? "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function VersionHistoryPage() {
   const params = useParams<{ id: string }>();
@@ -18,6 +123,7 @@ export default function VersionHistoryPage() {
   const [toId, setToId] = useState<string>("");
   const [diff, setDiff] = useState<VersionDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!getToken()) {
@@ -62,12 +168,33 @@ export default function VersionHistoryPage() {
         <h1 className="mt-2 text-xl font-semibold text-gray-900">Version History</h1>
 
         <div className="mt-4 divide-y divide-gray-200 rounded-lg border border-gray-200 bg-white">
-          {[...versions].reverse().map((v) => (
-            <div key={v.id} className="flex items-center justify-between px-4 py-3">
-              <span className="text-sm font-medium text-gray-900">v{v.semver}</span>
-              <StatusBadge status={v.status} />
-            </div>
-          ))}
+          {[...versions].reverse().map((v) => {
+            const isOpen = expandedVersions.has(v.id);
+            return (
+              <div key={v.id} className="px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-gray-900">v{v.semver}</span>
+                    <StatusBadge status={v.status} />
+                  </div>
+                  <button
+                    onClick={() => setExpandedVersions((prev) => {
+                      const next = new Set(prev);
+                      if (isOpen) next.delete(v.id);
+                      else next.add(v.id);
+                      return next;
+                    })}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    {isOpen ? "Hide pages ▲" : "View compiled pages ▼"}
+                  </button>
+                </div>
+                {isOpen && (
+                  <CompiledPagesPanel productId={params.id} versionId={v.id} />
+                )}
+              </div>
+            );
+          })}
         </div>
 
         <div className="mt-8 rounded-lg border border-gray-200 bg-white p-5">
@@ -75,17 +202,13 @@ export default function VersionHistoryPage() {
           <div className="mt-3 flex items-center gap-3">
             <select value={fromId} onChange={(e) => setFromId(e.target.value)} className="rounded border border-gray-300 px-3 py-2 text-sm">
               {versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  v{v.semver}
-                </option>
+                <option key={v.id} value={v.id}>v{v.semver}</option>
               ))}
             </select>
             <span className="text-sm text-gray-400">vs</span>
             <select value={toId} onChange={(e) => setToId(e.target.value)} className="rounded border border-gray-300 px-3 py-2 text-sm">
               {versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  v{v.semver}
-                </option>
+                <option key={v.id} value={v.id}>v{v.semver}</option>
               ))}
             </select>
             <button onClick={runDiff} className="rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-700">

@@ -89,7 +89,7 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
         roles=roles,
         tools=tools,
         created_by=row.created_by,
-        source_extraction_run_id=row.source_extraction_run_id,
+        source_extraction_run_id=row.source_extraction_entry_id,
         process_overview=content.get("process_overview") or {},
     )
 
@@ -209,7 +209,7 @@ class SqlAlchemyKnowledgeProductRepository:
                         semver=str(version.semver),
                         status=version.status.value,
                         yaml_content=content,
-                        source_extraction_run_id=version.source_extraction_run_id,
+                        source_extraction_entry_id=version.source_extraction_run_id,
                         created_by=version.created_by,
                     )
                 )
@@ -224,3 +224,14 @@ class SqlAlchemyKnowledgeProductRepository:
         await self._session.flush()
         row.current_version_id = product.current_version.id
         await self._session.commit()
+
+    async def update_draft_content(self, version_id: uuid.UUID, yaml_content: dict) -> None:
+        """Update the yaml_content of an existing draft version in place — no new row, no semver bump."""
+        from sqlalchemy import update as sa_update
+        await self._session.execute(
+            sa_update(KnowledgeProductVersionModel)
+            .where(KnowledgeProductVersionModel.id == version_id)
+            .where(KnowledgeProductVersionModel.status == "draft")
+            .values(yaml_content=yaml_content)
+        )
+        await self._session.flush()

@@ -52,9 +52,11 @@ from app.application.knowledge_product.use_cases import (
     ListKnowledgeProductsUseCase,
     TransitionStatusUseCase,
 )
+from app.api.deps import SessionDep
 from app.core.security import CurrentUser, get_current_user, require_roles
 from app.domain.governance.value_objects import Role
 from app.domain.knowledge_product.value_objects import KnowledgeProductStatus
+from app.infrastructure.db.models import CompileSession, CompileSessionEntry
 
 router = APIRouter(prefix="/knowledge-products", tags=["knowledge-products"])
 
@@ -337,6 +339,49 @@ async def list_versions(
     except KnowledgeProductNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return KnowledgeProductResponse.from_domain(product).versions
+
+
+@router.get("/{product_id}/versions/{version_id}/compiled-pages")
+async def get_compiled_pages(
+    product_id: uuid.UUID,
+    version_id: uuid.UUID,
+    session: SessionDep,
+    _current_user: Annotated[CurrentUser, Depends(get_current_user)],
+) -> list[dict]:
+    """Return compile sessions for a KP version, each with its page entries (compiled + discarded)."""
+    from sqlalchemy import select as sa_select
+
+    session_rows = (await session.execute(
+        sa_select(CompileSession)
+        .where(CompileSession.version_id == version_id)
+        .order_by(CompileSession.created_at)
+    )).scalars().all()
+
+    result = []
+    for s in session_rows:
+        entry_rows = (await session.execute(
+            sa_select(CompileSessionEntry)
+            .where(CompileSessionEntry.session_id == s.id)
+            .order_by(CompileSessionEntry.created_at)
+        )).scalars().all()
+
+        result.append({
+            "session_id": str(s.id),
+            "product_name": s.product_name,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "pages": [
+                {
+                    "run_id": str(e.entry_id) if e.entry_id else None,
+                    "page_id": str(e.page_id) if e.page_id else None,
+                    "title": e.page_title,
+                    "status": e.status,
+                    "reason": e.reason,
+                    "compiled_at": e.compiled_at.isoformat() if e.compiled_at else None,
+                }
+                for e in entry_rows
+            ],
+        })
+    return result
 
 
 @router.put("/{product_id}", response_model=KnowledgeProductResponse)

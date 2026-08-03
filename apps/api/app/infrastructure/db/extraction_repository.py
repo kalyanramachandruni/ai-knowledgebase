@@ -1,31 +1,95 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.extraction.entities import ExtractionRun, ExtractionStatus
-from app.infrastructure.db.models import ExtractionRun as ExtractionRunModel
+from app.domain.extraction.entities import ExtractionRun, ExtractionStatus, PageSourceType
+from app.infrastructure.db.models import (
+    CompileSession,
+    CompileSessionEntry,
+    ExtractionSession as ExtractionSessionModel,
+    ExtractionSessionEntry as ExtractionSessionEntryModel,
+)
 
 
-def _to_domain(row: ExtractionRunModel) -> ExtractionRun:
+def _coerce_draft(draft: object) -> dict | None:
+    if draft is None:
+        return None
+    if isinstance(draft, dict):
+        return draft
+    if isinstance(draft, str):
+        try:
+            parsed = json.loads(draft)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _to_domain(
+    entry: ExtractionSessionEntryModel,
+    session: ExtractionSessionModel,
+    compile_entry: CompileSessionEntry | None = None,
+    compile_version_id: uuid.UUID | None = None,
+) -> ExtractionRun:
+    compile_status: str | None = None
+    compiled_at: datetime | None = None
+    compile_error: str | None = None
+
+    if compile_entry:
+        if compile_entry.status == "compiled":
+            compile_status = "succeeded"
+            compiled_at = compile_entry.compiled_at
+        elif compile_entry.status == "skipped":
+            compile_status = "failed"
+            compile_error = compile_entry.reason
+
     return ExtractionRun(
-        id=row.id,
-        page_id=row.page_id,
-        llm_provider=row.llm_provider,
-        llm_model=row.llm_model,
-        status=ExtractionStatus(row.status),
-        structured_draft=row.structured_draft,
-        error_message=row.error_message,
-        started_at=row.started_at,
-        completed_at=row.completed_at,
+        id=entry.id,
+        session_id=entry.session_id,
+        page_id=entry.page_id,
+        page_source_type=PageSourceType(entry.page_source_type) if entry.page_source_type else None,
+        status=ExtractionStatus(entry.status),
+        structured_draft=_coerce_draft(entry.structured_draft),
+        error_message=entry.error_message,
+        llm_provider=session.llm_provider,
+        llm_model=session.llm_model,
+        started_at=session.started_at,
+        completed_at=session.completed_at,
+        compiled_at=compiled_at,
+        compile_status=compile_status,
+        compile_error=compile_error,
+        compiled_version_id=compile_version_id,
     )
 
 
+async def _latest_compile_per_entry(
+    db: AsyncSession, entry_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[CompileSessionEntry, uuid.UUID | None]]:
+    """Return {entry_id: (CompileSessionEntry, version_id)} for the most recent compile per entry."""
+    if not entry_ids:
+        return {}
+
+    rows = (await db.execute(
+        select(CompileSessionEntry, CompileSession.version_id)
+        .join(CompileSession, CompileSession.id == CompileSessionEntry.session_id)
+        .where(CompileSessionEntry.entry_id.in_(entry_ids))
+        .order_by(CompileSessionEntry.created_at.desc())
+    )).all()
+
+    result: dict[uuid.UUID, tuple[CompileSessionEntry, uuid.UUID | None]] = {}
+    for cse, version_id in rows:
+        if cse.entry_id not in result:
+            result[cse.entry_id] = (cse, version_id)
+    return result
+
+
 class SqlAlchemyExtractionRunRepository:
-    """Implements app.domain.extraction.repository.ExtractionRunRepository."""
+    """Handles extraction_session + extraction_session_entry as a unified flat ExtractionRun."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -33,86 +97,110 @@ class SqlAlchemyExtractionRunRepository:
     async def list_by_pages(self, page_ids: list[uuid.UUID]) -> list[ExtractionRun]:
         if not page_ids:
             return []
-        stmt = (
-            select(ExtractionRunModel)
-            .where(ExtractionRunModel.page_id.in_(page_ids))
-            .order_by(ExtractionRunModel.started_at.desc())
-        )
-        rows = (await self._session.execute(stmt)).scalars().all()
-        return [_to_domain(r) for r in rows]
+        rows = (await self._session.execute(
+            select(ExtractionSessionEntryModel, ExtractionSessionModel)
+            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
+            .where(ExtractionSessionEntryModel.page_id.in_(page_ids))
+            .order_by(ExtractionSessionModel.started_at.desc())
+        )).all()
+        entry_ids = [entry.id for entry, _ in rows]
+        compile_map = await _latest_compile_per_entry(self._session, entry_ids)
+        return [_to_domain(e, s, *compile_map.get(e.id, (None, None))) for e, s in rows]
 
     async def list_by_page(self, page_id: uuid.UUID) -> list[ExtractionRun]:
-        stmt = (
-            select(ExtractionRunModel)
-            .where(ExtractionRunModel.page_id == page_id)
-            .order_by(ExtractionRunModel.started_at.desc())
-        )
-        rows = (await self._session.execute(stmt)).scalars().all()
-        return [_to_domain(r) for r in rows]
+        rows = (await self._session.execute(
+            select(ExtractionSessionEntryModel, ExtractionSessionModel)
+            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
+            .where(ExtractionSessionEntryModel.page_id == page_id)
+            .order_by(ExtractionSessionModel.started_at.desc())
+        )).all()
+        entry_ids = [entry.id for entry, _ in rows]
+        compile_map = await _latest_compile_per_entry(self._session, entry_ids)
+        return [_to_domain(e, s, *compile_map.get(e.id, (None, None))) for e, s in rows]
 
     async def get_by_id(self, run_id: uuid.UUID) -> ExtractionRun | None:
-        row = await self._session.get(ExtractionRunModel, run_id)
-        return _to_domain(row) if row else None
-
-    async def mark_compiled(
-        self,
-        run_id: uuid.UUID,
-        version_id: uuid.UUID | None,
-        status: str,
-        error: str | None = None,
-    ) -> None:
-        row = await self._session.get(ExtractionRunModel, run_id)
+        row = (await self._session.execute(
+            select(ExtractionSessionEntryModel, ExtractionSessionModel)
+            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
+            .where(ExtractionSessionEntryModel.id == run_id)
+        )).first()
         if row is None:
-            return
-        row.compiled_at = datetime.now(timezone.utc)
-        row.compiled_version_id = version_id
-        row.compile_status = status
-        row.compile_error = error
-        await self._session.flush()
+            return None
+        entry, session = row
+        compile_map = await _latest_compile_per_entry(self._session, [entry.id])
+        cse, vid = compile_map.get(entry.id, (None, None))
+        return _to_domain(entry, session, cse, vid)
 
     async def list_pending_compile(self, page_ids: list[uuid.UUID]) -> list[ExtractionRun]:
-        """Most recent succeeded run per page that has not yet been compiled."""
+        """Most recent succeeded entry per page that has no compiled compile_session_entry."""
         if not page_ids:
             return []
-        # Get all succeeded runs for these pages ordered desc; caller picks first per page
-        stmt = (
-            select(ExtractionRunModel)
-            .where(
-                ExtractionRunModel.page_id.in_(page_ids),
-                ExtractionRunModel.status == "succeeded",
-                ExtractionRunModel.compiled_at.is_(None),
-            )
-            .order_by(ExtractionRunModel.started_at.desc())
+        # Subquery: entry_ids that already have a 'compiled' compile_session_entry
+        compiled_entry_ids_stmt = select(CompileSessionEntry.entry_id).where(
+            CompileSessionEntry.status == "compiled",
+            CompileSessionEntry.entry_id.isnot(None),
         )
-        rows = (await self._session.execute(stmt)).scalars().all()
-        # One run per page (most recent)
+        rows = (await self._session.execute(
+            select(ExtractionSessionEntryModel, ExtractionSessionModel)
+            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
+            .where(
+                ExtractionSessionEntryModel.page_id.in_(page_ids),
+                ExtractionSessionEntryModel.status == "succeeded",
+                ExtractionSessionEntryModel.id.not_in(compiled_entry_ids_stmt),
+            )
+            .order_by(ExtractionSessionModel.started_at.desc())
+        )).all()
         seen: set[uuid.UUID] = set()
         result = []
-        for row in rows:
-            if row.page_id not in seen:
-                seen.add(row.page_id)
-                result.append(_to_domain(row))
+        for entry, session in rows:
+            if entry.page_id not in seen:
+                seen.add(entry.page_id)
+                result.append(_to_domain(entry, session))
         return result
 
     async def save(self, run: ExtractionRun) -> ExtractionRun:
-        row = await self._session.get(ExtractionRunModel, run.id)
-        if row is None:
-            row = ExtractionRunModel(
-                id=run.id,
-                page_id=run.page_id,
+        """Create or update a session+entry pair atomically."""
+        entry_row = await self._session.get(ExtractionSessionEntryModel, run.id)
+        if entry_row is None:
+            # Create a new session for this run
+            session_row = ExtractionSessionModel(
+                id=uuid.uuid4(),
                 llm_provider=run.llm_provider,
                 llm_model=run.llm_model,
                 status=run.status.value,
-                structured_draft=run.structured_draft,
+                started_at=run.started_at or datetime.now(timezone.utc),
+                completed_at=run.completed_at,
+            )
+            self._session.add(session_row)
+            await self._session.flush()
+
+            entry_row = ExtractionSessionEntryModel(
+                id=run.id,
+                session_id=session_row.id,
+                page_id=run.page_id,
+                page_source_type=run.page_source_type.value if run.page_source_type else None,
+                status=run.status.value,
+                structured_draft=_coerce_draft(run.structured_draft),
                 error_message=run.error_message,
             )
-            self._session.add(row)
+            self._session.add(entry_row)
         else:
-            row.status = run.status.value
-            row.structured_draft = run.structured_draft
-            row.error_message = run.error_message
-            row.completed_at = run.completed_at
+            entry_row.status = run.status.value
+            entry_row.structured_draft = _coerce_draft(run.structured_draft)
+            entry_row.error_message = run.error_message
+
+            # Update session completed_at and status on completion
+            session_row = await self._session.get(ExtractionSessionModel, entry_row.session_id)
+            if session_row and run.completed_at:
+                session_row.completed_at = run.completed_at
+                session_row.status = run.status.value
 
         await self._session.flush()
         await self._session.commit()
-        return _to_domain(row)
+        return _to_domain(
+            entry_row,
+            session_row if entry_row.session_id else ExtractionSessionModel(
+                llm_provider=run.llm_provider, llm_model=run.llm_model,
+                started_at=run.started_at, completed_at=run.completed_at,
+            ),
+        )

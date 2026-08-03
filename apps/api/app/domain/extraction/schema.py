@@ -158,7 +158,13 @@ KNOWLEDGE_EXTRACTION_SCHEMA = ExtractionSchema(
                     "required": ["name"],
                 },
             },
+            "page_tags": {
+                "type": "array",
+                "description": "Up to 5 short topic tags that classify the key subject areas of this page within a postal and logistics context. Choose only tags that are clearly supported by the page content. Examples: Shipping, Tracking, Customs & Duties, Returns & Refunds, International Delivery, Domestic Delivery, Customer Service, Billing & Invoicing, Claims & Complaints, Parcel Dimensions, Dangerous Goods, Business Solutions, eCommerce, Address Validation, SLA & Transit Times, Pickup & Drop-off, Notifications, Import & Export, Warehousing, Last-Mile Delivery.",
+                "items": {"type": "string"},
+                "maxItems": 5,
+            },
         },
-        "required": ["process_overview", "process_steps", "rules", "policies", "sla_target", "escalations", "roles", "tools"],
+        "required": ["process_overview", "process_steps", "rules", "policies", "sla_target", "escalations", "roles", "tools", "page_tags"],
     }
 )

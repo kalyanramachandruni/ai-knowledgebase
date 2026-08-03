@@ -65,23 +65,31 @@ CREATE TABLE confluence_attachment (
 
 CREATE TYPE extraction_status AS ENUM ('pending', 'running', 'succeeded', 'failed');
 
-CREATE TABLE extraction_run (
+CREATE TYPE page_source_type_enum AS ENUM ('confluence', 'web');
+
+-- Session-level: one LLM call context, may cover one or more pages
+CREATE TABLE extraction_session (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    page_id         UUID NOT NULL REFERENCES confluence_page(id) ON DELETE CASCADE,
-    status          extraction_status NOT NULL DEFAULT 'pending',
-    llm_provider    TEXT NOT NULL,                  -- e.g. "anthropic", "openai"
+    llm_provider    TEXT NOT NULL,
     llm_model       TEXT NOT NULL,
-    structured_draft JSONB,                          -- raw extracted components before compilation
-    error_message   TEXT,
+    status          extraction_status NOT NULL DEFAULT 'pending',
     started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at    TIMESTAMPTZ,
-    compiled_at         TIMESTAMPTZ,
-    compiled_version_id UUID REFERENCES knowledge_product_version(id),
-    compile_status      TEXT,                         -- 'succeeded' | 'failed'
-    compile_error       TEXT
+    completed_at    TIMESTAMPTZ
 );
 
-CREATE INDEX ix_extraction_run_page ON extraction_run(page_id);
+-- Per-page extraction result within a session
+CREATE TABLE extraction_session_entry (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id      UUID NOT NULL REFERENCES extraction_session(id) ON DELETE CASCADE,
+    -- page_id points to either confluence_page.id or web_page.id depending on page_source_type
+    page_id         UUID,
+    page_source_type page_source_type_enum,
+    status          extraction_status NOT NULL DEFAULT 'pending',
+    structured_draft JSONB,
+    error_message   TEXT
+);
+
+CREATE INDEX ix_extraction_session_entry_page ON extraction_session_entry(page_id, page_source_type);
 
 -- ============ Knowledge Product Registry ============
 
@@ -104,7 +112,7 @@ CREATE TABLE knowledge_product_version (
     semver          TEXT NOT NULL,                    -- e.g. "1.2.0"
     status          knowledge_product_status NOT NULL DEFAULT 'draft',
     yaml_content     JSONB NOT NULL,                  -- canonical Knowledge Product YAML, stored as JSONB
-    source_extraction_run_id UUID REFERENCES extraction_run(id),
+    source_extraction_entry_id UUID REFERENCES extraction_session_entry(id),
     created_by      UUID NOT NULL REFERENCES app_user(id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     published_at    TIMESTAMPTZ,
@@ -155,4 +163,33 @@ CREATE TABLE event_outbox (
     payload         JSONB NOT NULL,
     occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at    TIMESTAMPTZ
+);
+
+-- ============ Compile Session Tracking ============
+
+CREATE TABLE compile_session (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    version_id           UUID NOT NULL REFERENCES knowledge_product_version(id) ON DELETE CASCADE,
+    knowledge_product_id UUID REFERENCES knowledge_product(id) ON DELETE SET NULL,
+    product_name         TEXT,                        -- denormalized KP name for display
+    llm_provider         TEXT,
+    llm_model            TEXT,
+    status               TEXT,                        -- 'running' | 'succeeded' | 'failed'
+    started_at           TIMESTAMPTZ,
+    completed_at         TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by           UUID REFERENCES app_user(id)
+);
+
+CREATE TABLE compile_session_entry (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id  UUID NOT NULL REFERENCES compile_session(id) ON DELETE CASCADE,
+    entry_id    UUID REFERENCES extraction_session_entry(id),
+    -- page_id mirrors extraction_session_entry.page_id (polymorphic UUID, no FK)
+    page_id     UUID,
+    page_title  TEXT,
+    status      TEXT NOT NULL CHECK (status IN ('compiled', 'discarded', 'skipped')),
+    reason      TEXT,
+    compiled_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );

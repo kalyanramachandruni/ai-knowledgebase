@@ -12,6 +12,7 @@ from app.api.v1.routers.confluence import router as confluence_router
 from app.api.v1.routers.documents import router as documents_router
 from app.api.v1.routers.extraction import router as extraction_router
 from app.api.v1.routers.knowledge_products import router as knowledge_products_router
+from app.api.v1.routers.web_crawl import router as web_crawl_router
 from app.core.telemetry import setup_telemetry
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ app.include_router(knowledge_products_router, prefix="/api/v1")
 app.include_router(confluence_router, prefix="/api/v1")
 app.include_router(extraction_router, prefix="/api/v1")
 app.include_router(documents_router, prefix="/api/v1")
+app.include_router(web_crawl_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 
 setup_telemetry(app)

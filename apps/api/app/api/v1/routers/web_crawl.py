@@ -164,11 +164,14 @@ async def _crawl_and_extract_linked(source_id: uuid.UUID, page_id: uuid.UUID) ->
         linked_page_ids = [r.linked_page_id for r in link_rows if r.linked_page_id is not None]
         print(f"[linked] linked={len(linked_page_ids)} uncrawled={len(uncrawled_urls)}", flush=True)
 
-        # Crawl uncrawled links and add them to the source
+        # Crawl uncrawled links — only same-domain links (skip external like apple.com, google.com)
+        source_domain = _parent_domain(urlparse(source.root_url).netloc)
         newly_crawled_ids: list[uuid.UUID] = []
         if uncrawled_urls:
             async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
                 for url in uncrawled_urls:
+                    if _parent_domain(urlparse(url).netloc) != source_domain:
+                        continue
                     # Skip if already in web_page
                     existing = (await session.execute(
                         select(WebPageModel).where(WebPageModel.source_id == source_id, WebPageModel.url == url)

@@ -37,7 +37,7 @@ class ExtractKnowledgeFromPageUseCase:
         self._llm_provider = llm_provider
         self._llm_model = llm_model
 
-    async def execute(self, page_id: uuid.UUID) -> ExtractionRun:
+    async def execute(self, page_id: uuid.UUID, *, source_url: str | None = None) -> ExtractionRun:
         page = await self._page_repository.get_by_id(page_id)
         if page is None:
             raise ConfluencePageNotFound(f"Confluence page {page_id} not found")
@@ -54,7 +54,7 @@ class ExtractKnowledgeFromPageUseCase:
 
         try:
             plain_text = strip_storage_format(page.body_storage_format)
-            result = await self._llm_port.extract(plain_text, KNOWLEDGE_EXTRACTION_SCHEMA)
+            result = await self._llm_port.extract(plain_text, KNOWLEDGE_EXTRACTION_SCHEMA, source_url=source_url)
         except Exception as exc:
             run.status = ExtractionStatus.FAILED
             run.error_message = str(exc)

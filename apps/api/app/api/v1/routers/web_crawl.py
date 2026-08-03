@@ -236,7 +236,7 @@ async def _crawl_and_extract_linked(source_id: uuid.UUID, page_id: uuid.UUID) ->
             )
             run = await extraction_repo.save(run)
             try:
-                result = await llm_port.extract(linked_page.plain_text, KNOWLEDGE_EXTRACTION_SCHEMA)
+                result = await llm_port.extract(linked_page.plain_text, KNOWLEDGE_EXTRACTION_SCHEMA, source_url=linked_page.url)
                 run.status = ExtractionStatus.SUCCEEDED
                 run.structured_draft = {k: v for k, v in dataclasses.asdict(result).items() if k != "raw_model_output"}
                 run.completed_at = utc_now()
@@ -624,7 +624,7 @@ async def extract_web_page(
     run = await extraction_repo.save(run)
 
     try:
-        result = await llm_port.extract(page.plain_text, KNOWLEDGE_EXTRACTION_SCHEMA)
+        result = await llm_port.extract(page.plain_text, KNOWLEDGE_EXTRACTION_SCHEMA, source_url=page.url)
         run.status = ExtractionStatus.SUCCEEDED
         run.structured_draft = {k: v for k, v in dataclasses.asdict(result).items() if k != "raw_model_output"}
         run.completed_at = utc_now()

@@ -18,12 +18,13 @@ class OpenAIExtractionAdapter:
         self._model = model
         self._client = client or AsyncOpenAI(api_key=api_key)
 
-    async def extract(self, raw_text: str, schema: ExtractionSchema) -> ExtractionResult:
+    async def extract(self, raw_text: str, schema: ExtractionSchema, *, source_url: str | None = None) -> ExtractionResult:
+        content = f"SOURCE_URL: {source_url}\n\n{raw_text}" if source_url else raw_text
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": raw_text},
+                {"role": "user", "content": content},
             ],
             tools=[
                 {

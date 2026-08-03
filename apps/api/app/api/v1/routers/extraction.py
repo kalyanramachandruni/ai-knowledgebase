@@ -58,6 +58,20 @@ _OWNER_OR_ADMIN = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN)
 _ANY_ROLE = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN, Role.REVIEWER, Role.CONSUMER)
 
 
+async def _confluence_page_url(page, session) -> str | None:
+    """Build the canonical Confluence page URL by loading the parent space."""
+    if page is None:
+        return None
+    try:
+        from app.infrastructure.db.models import ConfluenceSpace as ConfluenceSpaceModel
+        space = await session.get(ConfluenceSpaceModel, page.space_id)
+        if space and space.base_url:
+            return f"{space.base_url.rstrip('/')}/wiki/pages/{page.confluence_page_id}"
+        return None
+    except Exception:
+        return None
+
+
 async def _fetch_version_map(
     session: AsyncSession,
     version_ids: list[uuid.UUID],
@@ -231,7 +245,7 @@ async def smart_extract_page(
             )
 
     try:
-        run = await use_case.execute(page_id)
+        run = await use_case.execute(page_id, source_url=await _confluence_page_url(page, session))
     except ConfluencePageNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ExtractionRunResponse(
@@ -245,11 +259,14 @@ async def smart_extract_page(
 @router.post("/confluence/pages/{page_id}/extract", response_model=ExtractionRunResponse)
 async def extract_page(
     page_id: uuid.UUID,
+    session: SessionDep,
     use_case: Annotated[ExtractKnowledgeFromPageUseCase, Depends(get_extract_use_case)],
     _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> ExtractionRunResponse:
+    from app.infrastructure.db.models import ConfluencePage as ConfluencePageModel
+    page = await session.get(ConfluencePageModel, page_id)
     try:
-        run = await use_case.execute(page_id)
+        run = await use_case.execute(page_id, source_url=await _confluence_page_url(page, session))
     except ConfluencePageNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ExtractionRunResponse(

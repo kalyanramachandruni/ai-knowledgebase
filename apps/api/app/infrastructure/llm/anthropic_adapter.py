@@ -15,14 +15,15 @@ class AnthropicExtractionAdapter:
         self._model = model
         self._client = client or AsyncAnthropic(api_key=api_key)
 
-    async def extract(self, raw_text: str, schema: ExtractionSchema) -> ExtractionResult:
+    async def extract(self, raw_text: str, schema: ExtractionSchema, *, source_url: str | None = None) -> ExtractionResult:
+        content = f"SOURCE_URL: {source_url}\n\n{raw_text}" if source_url else raw_text
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=4096,
             system=EXTRACTION_SYSTEM_PROMPT,
             tools=[{"name": TOOL_NAME, "description": TOOL_DESCRIPTION, "input_schema": schema.json_schema}],
             tool_choice={"type": "tool", "name": TOOL_NAME},
-            messages=[{"role": "user", "content": raw_text}],
+            messages=[{"role": "user", "content": content}],
         )
 
         tool_use_block = next(block for block in response.content if block.type == "tool_use")

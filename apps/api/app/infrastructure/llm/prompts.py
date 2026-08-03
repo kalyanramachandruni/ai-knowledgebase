@@ -1,5 +1,5 @@
 EXTRACTION_SYSTEM_PROMPT = """You are a business-process analyst specializing in documenting processes for AI agent consumption. \
-Given the raw content of a Confluence page describing a business process, SOP, or policy, extract the structured \
+Given the raw content of a page describing a business process, SOP, or policy, extract the structured \
 components using the `extract_knowledge` tool.
 
 Follow these guidelines carefully:
@@ -16,23 +16,31 @@ Follow these guidelines carefully:
 - `inputs` / `outputs`: data or documents consumed/produced
 - `decision`: if this step is a decision point, describe the branch criteria; otherwise null
 - `tools_used`: business systems used in this step (e.g. "Salesforce")
+- `sources`: always set to a list containing the source page URL provided at the top of the content.
 
 **roles** — Extract only *business roles* (e.g. "Sales Manager", "Customer Service Agent"). \
 Do NOT include individual person names (e.g. "John Smith"), document metadata (Author, Contributor, Approver), \
-or technical system users.
+or technical system users. Set `sources` to the source page URL.
 
 **tools** — Extract only *business systems and user-facing tools* (e.g. Salesforce, SAP, Confluence, Trello). \
-Do NOT include internal code class names, Apex trigger names, API method names, or technical identifiers \
-(e.g. "crm_opportunityTriggerHelper", "cs_fetchTrackingDetails").
+Do NOT include internal code class names, Apex trigger names, API method names, or technical identifiers. \
+Set `sources` to the source page URL.
 
-**rules** — Capture the condition and action precisely. Include `rationale` if the document explains why the rule exists.
+**rules** — Capture the condition and action precisely. Include `rationale` if the document explains why the rule exists. \
+Set `sources` to the source page URL.
+
+**policies** — Same as rules. Set `sources` to the source page URL.
 
 **escalations** — `trigger` should describe what causes the escalation (time elapsed such as "90m", a condition, or event). \
-Include `action` describing what the escalated party should do.
+Include `action` describing what the escalated party should do. Set `sources` to the source page URL.
 
 **page_tags** — Assign up to 5 short topic tags that classify the key subject areas of this page within a \
 postal and logistics context. Only use tags clearly supported by the content. Return an empty list if the \
 page has no substantive content (e.g. navigation-only pages).
+
+**sources field** — Every item (step, rule, policy, escalation, role, tool) must include a `sources` field \
+containing a list with the URL of the page this item was extracted from. The URL is provided at the start of \
+the content in a SOURCE_URL line. If no URL is provided, use an empty list.
 
 Only extract what is explicitly stated or strongly implied by the text. Do not invent content. \
 If a field isn't present, return null or an empty list."""
@@ -41,7 +49,7 @@ TOOL_NAME = "extract_knowledge"
 TOOL_DESCRIPTION = "Record the structured process details extracted from the page, with enough detail for AI agent consumption."
 
 MERGE_SYSTEM_PROMPT = """You are a business-process analyst. You are given two structured Knowledge Products — \
-an existing version and a new extraction from an additional Confluence page. Merge them into a single coherent \
+an existing version and a new extraction from an additional page. Merge them into a single coherent \
 Knowledge Product using the `extract_knowledge` tool.
 
 Follow these rules:
@@ -51,13 +59,18 @@ Follow these rules:
   identical description). If the same step name appears with different descriptions or detail, keep BOTH \
   (rename one to distinguish if needed). Err strongly on the side of inclusion — it is better to have \
   more steps than to silently discard steps that may represent different contexts or sub-processes. \
-  Preserve all descriptive detail (`description`, `responsible_role`, `inputs`, `outputs`).
+  Preserve all descriptive detail (`description`, `responsible_role`, `inputs`, `outputs`). \
+  **sources**: union the `sources` arrays from both items — preserve all URLs.
 - **rules and policies**: Keep all distinct rules; if two are semantically equivalent keep only the clearer, \
-  more complete one (prefer the one with rationale).
-- **roles**: Union of both sets. Keep only business roles — discard individual names or metadata fields.
-- **tools**: Union of both sets. Keep only business systems — discard code class names or API method names.
-- **escalations**: Keep all distinct escalation paths.
+  more complete one (prefer the one with rationale). **sources**: union the `sources` arrays of the merged items.
+- **roles**: Union of both sets. Keep only business roles — discard individual names or metadata fields. \
+  **sources**: union the `sources` arrays.
+- **tools**: Union of both sets. Keep only business systems — discard code class names or API method names. \
+  **sources**: union the `sources` arrays.
+- **escalations**: Keep all distinct escalation paths. **sources**: union the `sources` arrays.
 - **SLA**: Use the more specific/stricter value if both are present; otherwise use whichever is set.
+- **sources field**: Every item in the merged output must carry a `sources` list that is the union of all \
+  source URLs from both inputs for that item. Never drop a source URL — this is the provenance trail.
 - Do not invent anything not present in either version."""
 
-MERGE_TOOL_DESCRIPTION = "Record the merged process details from both versions."
+MERGE_TOOL_DESCRIPTION = "Record the merged process details from both versions, preserving source attribution on every item."

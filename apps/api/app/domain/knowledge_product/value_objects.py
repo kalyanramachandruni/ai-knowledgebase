@@ -73,6 +73,7 @@ class ProcessStep(ValueObject):
     outputs: tuple[str, ...] = ()
     decision: str | None = None
     tools_used: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ class BusinessRule(ValueObject):
     condition: str
     action: str
     rationale: str = ""
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,7 @@ class Policy(ValueObject):
     condition: str
     action: str
     rationale: str = ""
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,12 +102,14 @@ class Escalation(ValueObject):
     after: str          # trigger — time elapsed (e.g. "90m"), condition, or event
     escalate_to: str    # role name
     action: str = ""    # what the escalated party should do
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Role(ValueObject):
     name: str
     responsibilities: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,3 +117,4 @@ class ToolReference(ValueObject):
     key: str            # e.g. "Salesforce"
     display_name: str
     purpose: str = ""   # how this tool is used in the process
+    sources: tuple[str, ...] = ()

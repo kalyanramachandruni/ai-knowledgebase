@@ -15,6 +15,7 @@ class ProcessStepInput:
     outputs: list[str] = field(default_factory=list)
     decision: str | None = None
     tools_used: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class RuleInput:
     condition: str
     action: str
     rationale: str = ""
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -29,18 +31,21 @@ class EscalationInput:
     after: str
     escalate_to: str
     action: str = ""
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class RoleInput:
     name: str
     responsibilities: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ToolInput:
     name: str
     purpose: str = ""
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

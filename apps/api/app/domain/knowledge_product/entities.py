@@ -67,6 +67,7 @@ class KnowledgeProductVersion:
                 step["decision"] = s.decision
             if s.tools_used:
                 step["tools_used"] = list(s.tools_used)
+            step["sources"] = list(s.sources)
             steps.append(step)
 
         roles = []
@@ -74,6 +75,7 @@ class KnowledgeProductVersion:
             role_dict: dict = {"name": r.name}
             if r.responsibilities:
                 role_dict["responsibilities"] = list(r.responsibilities)
+            role_dict["sources"] = list(r.sources)
             roles.append(role_dict)
 
         tools = []
@@ -81,6 +83,7 @@ class KnowledgeProductVersion:
             tool_dict: dict = {"name": t.display_name or t.key}
             if t.purpose:
                 tool_dict["purpose"] = t.purpose
+            tool_dict["sources"] = list(t.sources)
             tools.append(tool_dict)
 
         return {
@@ -94,15 +97,18 @@ class KnowledgeProductVersion:
             "process": {"steps": steps},
             "rules": [
                 {k: v for k, v in {"condition": r.condition, "action": r.action, "rationale": r.rationale}.items() if v}
+                | {"sources": list(r.sources)}
                 for r in self.rules
             ],
             "policies": [
                 {k: v for k, v in {"condition": p.condition, "action": p.action, "rationale": p.rationale}.items() if v}
+                | {"sources": list(p.sources)}
                 for p in self.policies
             ],
             "sla": {"target": self.sla.target} if self.sla else None,
             "escalations": [
                 {k: v for k, v in {"after": e.after, "escalate_to": e.escalate_to, "action": e.action}.items() if v}
+                | {"sources": list(e.sources)}
                 for e in self.escalations
             ],
             "roles": roles,

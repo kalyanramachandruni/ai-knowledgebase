@@ -94,10 +94,11 @@ def _extraction_result_to_compile_input(
                 name=s.get("name", ""),
                 description=s.get("description", ""),
                 responsible_role=s.get("responsible_role", ""),
-                inputs=s.get("inputs", []),
-                outputs=s.get("outputs", []),
+                inputs=s.get("inputs") or [],
+                outputs=s.get("outputs") or [],
                 decision=s.get("decision"),
-                tools_used=s.get("tools_used", []),
+                tools_used=s.get("tools_used") or [],
+                sources=s.get("sources") or [],
             ))
 
     roles = []
@@ -105,26 +106,27 @@ def _extraction_result_to_compile_input(
         if isinstance(r, str):
             roles.append(RoleInput(name=r))
         else:
-            roles.append(RoleInput(name=r.get("name", ""), responsibilities=r.get("responsibilities", [])))
+            roles.append(RoleInput(name=r.get("name", ""), responsibilities=r.get("responsibilities") or [], sources=r.get("sources") or []))
 
     tools = []
     for t in result.tools:
         if isinstance(t, str):
             tools.append(ToolInput(name=t))
         else:
-            tools.append(ToolInput(name=t.get("name", ""), purpose=t.get("purpose", "")))
+            tools.append(ToolInput(name=t.get("name", ""), purpose=t.get("purpose", ""), sources=t.get("sources") or []))
 
     return CompileKnowledgeProductInput(
         process_overview=result.process_overview or {},
         process_steps=steps,
-        rules=[RuleInput(condition=r["condition"], action=r["action"], rationale=r.get("rationale", "")) for r in result.rules],
-        policies=[RuleInput(condition=p["condition"], action=p["action"], rationale=p.get("rationale", "")) for p in result.policies],
+        rules=[RuleInput(condition=r["condition"], action=r["action"], rationale=r.get("rationale", ""), sources=r.get("sources") or []) for r in result.rules],
+        policies=[RuleInput(condition=p["condition"], action=p["action"], rationale=p.get("rationale", ""), sources=p.get("sources") or []) for p in result.policies],
         sla_target=result.sla_target,
         escalations=[
             EscalationInput(
                 after=e.get("trigger") or e.get("after", ""),
                 escalate_to=e["escalate_to"],
                 action=e.get("action", ""),
+                sources=e.get("sources") or [],
             )
             for e in result.escalations
         ],

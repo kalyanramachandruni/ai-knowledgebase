@@ -40,12 +40,14 @@ _OWNER_OR_ADMIN = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN)
 class CreateWebSourceRequest(BaseModel):
     name: str
     root_url: str
+    crawl_depth: int | None = None  # None = unlimited; 1 = root page links only
 
 
 class WebSourceResponse(BaseModel):
     id: str
     name: str
     root_url: str
+    crawl_depth: int | None
     last_crawled_at: str | None
     page_count: int
     last_crawl_created: int | None
@@ -261,6 +263,7 @@ async def create_web_source(
     row = WebSourceModel(
         name=payload.name,
         root_url=payload.root_url.rstrip("/"),
+        crawl_depth=payload.crawl_depth,
     )
     session.add(row)
     await session.flush()
@@ -270,6 +273,7 @@ async def create_web_source(
         id=str(row.id),
         name=row.name,
         root_url=row.root_url,
+        crawl_depth=row.crawl_depth,
         last_crawled_at=row.last_crawled_at.isoformat() if row.last_crawled_at else None,
         page_count=0,
         last_crawl_created=None,
@@ -294,6 +298,7 @@ async def list_web_sources(
             id=str(s.id),
             name=s.name,
             root_url=s.root_url,
+            crawl_depth=s.crawl_depth,
             last_crawled_at=s.last_crawled_at.isoformat() if s.last_crawled_at else None,
             page_count=page_count,
             last_crawl_created=s.last_crawl_created,
@@ -401,15 +406,15 @@ async def crawl_web_source(
         created = updated = skipped = 0
         visited: set[str] = set()
         root_url = source.root_url.rstrip("/")
-        queue: deque[str] = deque([root_url])
+        max_depth: int | None = source.crawl_depth
+        # Queue entries are (url, depth). Depth 0 = root page.
+        queue: deque[tuple[str, int]] = deque([(root_url, 0)])
         parsed_base = urlparse(root_url)
-        # Scope: follow all same-origin links recursively from root_url.
-        # Pages from other sources won't be re-crawled into this source (source_id check on insert).
         origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             while queue:
-                url = queue.popleft()
+                url, depth = queue.popleft()
                 if url in visited:
                     continue
                 visited.add(url)
@@ -491,10 +496,12 @@ async def crawl_web_source(
                         ))
                     await session.flush()
 
-                # Enqueue all same-origin links recursively.
-                for link in _same_origin_links(html, url):
-                    if link not in visited and link not in queue:
-                        queue.append(link)
+                # Enqueue same-origin links if within allowed depth.
+                if max_depth is None or depth < max_depth:
+                    queued_urls = {u for u, _ in queue}
+                    for link in _same_origin_links(html, url):
+                        if link not in visited and link not in queued_urls:
+                            queue.append((link, depth + 1))
 
         # Update source stats
         source.last_crawled_at = utc_now()

@@ -84,6 +84,7 @@ export interface WebSource {
   id: string;
   name: string;
   root_url: string;
+  crawl_depth: number | null;
   last_crawled_at: string | null;
   page_count: number;
   last_crawl_created: number | null;

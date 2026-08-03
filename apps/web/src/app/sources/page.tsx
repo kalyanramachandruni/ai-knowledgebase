@@ -897,6 +897,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
   const [draftLoading, setDraftLoading] = useState(false);
   const [addName, setAddName] = useState("");
   const [addUrl, setAddUrl] = useState("");
+  const [addDepth, setAddDepth] = useState<number | null>(1);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Per-page link expansion: pageId → links (null = not loaded, [] = loaded empty)
@@ -916,10 +917,11 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     setAdding(true);
     setError(null);
     try {
-      const src = await api.createWebSource(addName.trim(), addUrl.trim());
+      const src = await api.createWebSource(addName.trim(), addUrl.trim(), addDepth);
       setSources((s) => [...s, src]);
       setAddName("");
       setAddUrl("");
+      setAddDepth(1);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -1282,6 +1284,19 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                 className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
               />
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Crawl Depth</label>
+              <select
+                value={addDepth === null ? "recursive" : String(addDepth)}
+                onChange={(e) => setAddDepth(e.target.value === "recursive" ? null : Number(e.target.value))}
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="1">1 — Direct links only</option>
+                <option value="2">2 — Links of links</option>
+                <option value="3">3 — Three levels deep</option>
+                <option value="recursive">Recursive — entire domain</option>
+              </select>
+            </div>
           </div>
           {error && <p className="text-xs text-red-500">{error}</p>}
           <button
@@ -1345,6 +1360,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                     </a>
                     <p className="text-xs text-gray-400 mt-0.5">
                       {src.page_count} page{src.page_count !== 1 ? "s" : ""}
+                      {" · depth: "}{src.crawl_depth === null ? "recursive" : src.crawl_depth}
                       {src.last_crawled_at ? ` · last crawled ${new Date(src.last_crawled_at).toLocaleString()}` : " · never crawled"}
                       {src.last_crawl_created != null && (
                         <span> · +{src.last_crawl_created} new, ↻{src.last_crawl_updated} updated, ✗{src.last_crawl_skipped} skipped</span>

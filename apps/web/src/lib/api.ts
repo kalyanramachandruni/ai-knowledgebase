@@ -247,10 +247,10 @@ export const api = {
   // Web sources
   listWebSources: () => request<WebSource[]>("/web-sources"),
 
-  createWebSource: (name: string, root_url: string) =>
+  createWebSource: (name: string, root_url: string, crawl_depth: number | null) =>
     request<WebSource>("/web-sources", {
       method: "POST",
-      body: JSON.stringify({ name, root_url }),
+      body: JSON.stringify({ name, root_url, crawl_depth }),
     }),
 
   deleteWebSource: (id: string) =>

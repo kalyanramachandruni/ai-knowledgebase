@@ -80,9 +80,10 @@ class WebSource(Base):
     last_crawl_created: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_crawl_updated: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_crawl_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    crawl_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = unlimited
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    pages: Mapped[list["WebPage"]] = relationship(back_populates="source")
+    pages: Mapped[list["WebPage"]] = relationship(back_populates="source", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class WebPage(Base):

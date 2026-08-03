@@ -400,9 +400,12 @@ async def crawl_web_source(
     async def generate():
         created = updated = skipped = 0
         visited: set[str] = set()
-        queue: deque[str] = deque([source.root_url])
-        parsed_base = urlparse(source.root_url)
-        origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+        root_url = source.root_url.rstrip("/")
+        queue: deque[str] = deque([root_url])
+        parsed_base = urlparse(root_url)
+        # Scope: only follow links whose URL starts with root_url (path-scoped crawl).
+        # This means https://host/en/cs only crawls /en/cs/** not the whole domain.
+        crawl_prefix = root_url
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             while queue:
@@ -488,9 +491,12 @@ async def crawl_web_source(
                         ))
                     await session.flush()
 
-                # Enqueue new links from same origin
+                # Enqueue links that are at or under root_url (path-scoped recursive crawl).
+                # e.g. root https://host/en/cs → follows /en/cs and /en/cs/faq
+                # but NOT /en/cs-other or /en/ (siblings/ancestors).
                 for link in _same_origin_links(html, url):
-                    if link not in visited and link not in queue:
+                    in_scope = link == crawl_prefix or link.startswith(crawl_prefix + "/")
+                    if in_scope and link not in visited and link not in queue:
                         queue.append(link)
 
         # Update source stats

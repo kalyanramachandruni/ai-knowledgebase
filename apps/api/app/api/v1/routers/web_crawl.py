@@ -91,19 +91,28 @@ def _extract_text(html: str) -> tuple[str, str]:
     return title or "Untitled", plain_text
 
 
+def _parent_domain(netloc: str) -> str:
+    """Return the registrable parent domain (last two labels), e.g. 'posten.no'."""
+    parts = netloc.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
+
+
 def _same_origin_links(html: str, base_url: str) -> list[str]:
-    """Extract all <a href> links on the same origin as base_url."""
+    """Extract all <a href> links whose host shares the same parent domain as base_url.
+    This includes subdomains, e.g. adressesok.posten.no when base is www.posten.no."""
     parsed_base = urlparse(base_url)
-    origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+    base_domain = _parent_domain(parsed_base.netloc)
     soup = BeautifulSoup(html, "lxml")
     links: list[str] = []
     for a in soup.find_all("a", href=True):
         href: str = a["href"]
         full = urljoin(base_url, href)
         parsed = urlparse(full)
+        if parsed.scheme not in ("http", "https"):
+            continue
         # Strip fragment and query
         clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        if clean.startswith(origin) and clean not in links:
+        if _parent_domain(parsed.netloc) == base_domain and clean not in links:
             links.append(clean)
     return links
 
@@ -409,8 +418,6 @@ async def crawl_web_source(
         max_depth: int | None = source.crawl_depth
         # Queue entries are (url, depth). Depth 0 = root page.
         queue: deque[tuple[str, int]] = deque([(root_url, 0)])
-        parsed_base = urlparse(root_url)
-        origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
             while queue:

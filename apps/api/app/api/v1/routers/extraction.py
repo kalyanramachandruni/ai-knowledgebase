@@ -465,6 +465,7 @@ class BatchCompileStreamRequest(BaseModel):
     created_by: uuid.UUID
     bump: VersionBump = VersionBump.MINOR
     force: bool = False  # when True, ignores current draft and starts from last published version
+    brief: str | None = None  # optional product description used to filter irrelevant pages during merge
 
 
 def _sse(event: dict) -> str:
@@ -775,7 +776,7 @@ async def batch_compile_stream(
             logger.info("[compile-stream] page %d/%d: merging run_id=%s page_id=%s", page_num, total_pages, run_id, page_id)
             yield _sse({"type": "merging", "run_id": str(run_id), "page_id": str(page_id), "index": page_num, "total": total_pages})
             try:
-                current_merged = await llm_port.merge(current_merged, result, KNOWLEDGE_EXTRACTION_SCHEMA)
+                current_merged = await llm_port.merge(current_merged, result, KNOWLEDGE_EXTRACTION_SCHEMA, brief=payload.brief)
 
                 # Build canonical yaml_content via a temporary domain object — same shape as save()
                 compile_input = _extraction_result_to_compile_input(

@@ -887,7 +887,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
   const [pageFilters, setPageFilters] = useState<Record<string, FilterRow[]>>({});
   const [extractionStatusFilter, setExtractionStatusFilter] = useState<Record<string, "none" | "succeeded" | "failed" | "running" | "compiled" | "not_compiled" | null>>({});
   const [colWidths, setColWidths] = useState({ cb: 36, title: 260, url: 420, extraction: 200, fetched: 170, action: 140 });
-  const [compileForm, setCompileForm] = useState<Record<string, { productKey: string; name: string; owner: string } | null>>({});
+  const [compileForm, setCompileForm] = useState<Record<string, { productKey: string; name: string; owner: string; brief: string } | null>>({});
   const [compiling, setCompiling] = useState<Record<string, boolean>>({});
   const [compiledKp, setCompiledKp] = useState<Record<string, { id: string; name: string; semver: string } | null>>({});
   const [compilePageStatus, setCompilePageStatus] = useState<Record<string, Record<string, "compiling" | "compiled" | "discarded" | "failed">>>({});
@@ -1137,6 +1137,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             name: form.name.trim(),
             owner: form.owner.trim(),
             created_by: user?.user_id ?? "00000000-0000-0000-0000-000000000000",
+            brief: form.brief.trim() || null,
           }),
         }
       );
@@ -1584,7 +1585,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                     Include linked pages
                                   </label>
                                   <button
-                                    onClick={() => setCompileForm((f) => ({ ...f, [src.id]: f[src.id] ? null : { productKey: "", name: src.name, owner: user?.display_name ?? "" } }))}
+                                    onClick={() => setCompileForm((f) => ({ ...f, [src.id]: f[src.id] ? null : { productKey: "", name: src.name, owner: user?.display_name ?? "", brief: "" } }))}
                                     disabled={compileCount === 0}
                                     className={`rounded px-3 py-1 text-xs font-medium text-white disabled:opacity-40 ${selSize > 0 ? "bg-indigo-700 hover:bg-indigo-800" : "bg-indigo-600 hover:bg-indigo-700"}`}
                                   >
@@ -1625,6 +1626,20 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                         className="rounded border border-gray-300 px-2 py-1 text-xs w-32"
                                       />
                                     </div>
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs text-gray-500 mb-0.5">
+                                      Product Brief <span className="text-gray-400">(describe what this KP is about — used to filter irrelevant pages during compilation)</span>
+                                    </label>
+                                    <textarea
+                                      value={form.brief}
+                                      onChange={(e) => setCompileForm((f) => ({ ...f, [src.id]: { ...f[src.id]!, brief: e.target.value } }))}
+                                      placeholder="e.g. Customer self-service processes on posten.no — tracking parcels, managing delivery, address services and mail handling."
+                                      rows={2}
+                                      className="w-full rounded border border-gray-300 px-2 py-1 text-xs"
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-2">
                                     <button
                                       onClick={() => handleCompile(src.id, filteredPages)}
                                       disabled={isCompiling || !form.productKey.trim() || !form.name.trim() || !form.owner.trim()}

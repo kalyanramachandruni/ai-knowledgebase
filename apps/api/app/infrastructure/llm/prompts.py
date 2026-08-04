@@ -52,6 +52,8 @@ MERGE_SYSTEM_PROMPT = """You are a business-process analyst. You are given two s
 an existing version and a new extraction from an additional page. Merge them into a single coherent \
 Knowledge Product using the `extract_knowledge` tool.
 
+{brief_instruction}
+
 Follow these rules:
 - **process_overview**: Synthesize both summaries into one that accurately covers the combined scope. \
   Combine trigger and outcome statements if they differ.
@@ -72,5 +74,12 @@ Follow these rules:
 - **sources field**: Every item in the merged output must carry a `sources` list that is the union of all \
   source URLs from both inputs for that item. Never drop a source URL — this is the provenance trail.
 - Do not invent anything not present in either version."""
+
+_BRIEF_INSTRUCTION = """**Relevance filter**: This Knowledge Product is specifically about: {brief}
+If the NEW EXTRACTION is about a completely different topic unrelated to this scope \
+(e.g. a cookie consent page, an unrelated product portal, a generic navigation page), \
+return the EXISTING KNOWLEDGE PRODUCT unchanged — do not merge any content from the new extraction."""
+
+_NO_BRIEF_INSTRUCTION = ""
 
 MERGE_TOOL_DESCRIPTION = "Record the merged process details from both versions, preserving source attribution on every item."

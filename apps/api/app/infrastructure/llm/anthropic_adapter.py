@@ -4,7 +4,7 @@ from anthropic import AsyncAnthropic
 
 from app.domain.extraction.ports import ExtractionResult, ExtractionSchema
 import json
-from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME
+from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME, _BRIEF_INSTRUCTION, _NO_BRIEF_INSTRUCTION
 
 
 class AnthropicExtractionAdapter:
@@ -41,7 +41,7 @@ class AnthropicExtractionAdapter:
             raw_model_output=data,
         )
 
-    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema) -> ExtractionResult:
+    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema, *, brief: str | None = None) -> ExtractionResult:
         user_content = (
             "EXISTING KNOWLEDGE PRODUCT:\n"
             + json.dumps({
@@ -64,10 +64,12 @@ class AnthropicExtractionAdapter:
                 "tools": incoming.tools,
             }, indent=2)
         )
+        brief_instruction = _BRIEF_INSTRUCTION.format(brief=brief) if brief else _NO_BRIEF_INSTRUCTION
+        merge_prompt = MERGE_SYSTEM_PROMPT.format(brief_instruction=brief_instruction)
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=4096,
-            system=MERGE_SYSTEM_PROMPT,
+            system=merge_prompt,
             tools=[{"name": TOOL_NAME, "description": MERGE_TOOL_DESCRIPTION, "input_schema": schema.json_schema}],
             tool_choice={"type": "tool", "name": TOOL_NAME},
             messages=[{"role": "user", "content": user_content}],

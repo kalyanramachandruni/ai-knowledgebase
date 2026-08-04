@@ -271,14 +271,43 @@ export default function ProductDetailPage() {
 
 // ── view mode ─────────────────────────────────────────────────────────────────
 
+function SourceLinks({ sources }: { sources?: string[] | null }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {sources.map((url, i) => (
+        <a key={i} href={url} target="_blank" rel="noreferrer"
+          className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 hover:bg-blue-100 hover:underline">
+          ↗ {(() => { try { return new URL(url).hostname; } catch { return url; } })()}
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function ViewMode({ v }: { v: KnowledgeProduct["current_version"] }) {
+  const [showSources, setShowSources] = useState(false);
   const c = v.content;
-  type StepItem = string | { name: string; description?: string; responsible_role?: string; inputs?: string[]; outputs?: string[]; decision?: string; tools_used?: string[] };
-  type RoleItem = string | { name: string; responsibilities?: string[] };
-  type ToolItem = string | { name: string; purpose?: string };
+  type StepItem = string | { name: string; description?: string; responsible_role?: string; inputs?: string[]; outputs?: string[]; decision?: string; tools_used?: string[]; sources?: string[] };
+  type RoleItem = string | { name: string; responsibilities?: string[]; sources?: string[] };
+  type ToolItem = string | { name: string; purpose?: string; sources?: string[] };
 
   return (
     <>
+      {/* Sources toggle */}
+      <div className="mt-4 flex items-center gap-2">
+        <input
+          id="show-sources"
+          type="checkbox"
+          checked={showSources}
+          onChange={(e) => setShowSources(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
+        />
+        <label htmlFor="show-sources" className="text-xs text-gray-500 cursor-pointer select-none">
+          Show source pages
+        </label>
+      </div>
+
       <Section title="Metadata">
         <KeyValue label="ID" value={c.metadata.id} />
         <KeyValue label="Name" value={c.metadata.name} />
@@ -297,15 +326,15 @@ function ViewMode({ v }: { v: KnowledgeProduct["current_version"] }) {
       )}
 
       <Section title="Process Steps">
-        <StepList steps={c.process.steps as StepItem[]} />
+        <StepList steps={c.process.steps as StepItem[]} showSources={showSources} />
       </Section>
 
       <Section title="Rules">
-        <RuleList items={c.rules} />
+        <RuleList items={c.rules} showSources={showSources} />
       </Section>
 
       <Section title="Policies">
-        <RuleList items={c.policies} />
+        <RuleList items={c.policies} showSources={showSources} />
       </Section>
 
       <Section title="SLA">
@@ -316,10 +345,11 @@ function ViewMode({ v }: { v: KnowledgeProduct["current_version"] }) {
         )}
         {c.escalations.length > 0 && (
           <ul className="mt-2 space-y-1 text-sm text-gray-700">
-            {c.escalations.map((e: { after?: string; trigger?: string; escalate_to: string; action?: string }, i: number) => (
+            {c.escalations.map((e: { after?: string; trigger?: string; escalate_to: string; action?: string; sources?: string[] }, i: number) => (
               <li key={i}>
                 <span className="font-medium">{e.trigger ?? e.after}</span> → {e.escalate_to}
                 {e.action && <span className="text-gray-500"> — {e.action}</span>}
+                {showSources && <SourceLinks sources={e.sources} />}
               </li>
             ))}
           </ul>
@@ -327,11 +357,11 @@ function ViewMode({ v }: { v: KnowledgeProduct["current_version"] }) {
       </Section>
 
       <Section title="Roles">
-        <RoleList items={c.roles as RoleItem[]} />
+        <RoleList items={c.roles as RoleItem[]} showSources={showSources} />
       </Section>
 
       <Section title="Tools">
-        <ToolList items={c.tools as ToolItem[]} />
+        <ToolList items={c.tools as ToolItem[]} showSources={showSources} />
       </Section>
     </>
   );
@@ -639,22 +669,23 @@ function KeyValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-function RuleList({ items }: { items: { condition: string; action: string }[] }) {
+function RuleList({ items, showSources }: { items: { condition: string; action: string; sources?: string[] }[]; showSources?: boolean }) {
   if (items.length === 0) return <p className="text-sm text-gray-400">None.</p>;
   return (
-    <ul className="space-y-1 text-sm text-gray-700">
+    <ul className="space-y-2 text-sm text-gray-700">
       {items.map((item, i) => (
         <li key={i}>
           IF <code className="rounded bg-gray-100 px-1">{item.condition}</code> THEN {item.action}
+          {showSources && <SourceLinks sources={item.sources} />}
         </li>
       ))}
     </ul>
   );
 }
 
-type StepItem2 = string | { name: string; description?: string; responsible_role?: string; inputs?: string[]; outputs?: string[]; decision?: string; tools_used?: string[] };
+type StepItem2 = string | { name: string; description?: string; responsible_role?: string; inputs?: string[]; outputs?: string[]; decision?: string; tools_used?: string[]; sources?: string[] };
 
-function StepList({ steps }: { steps: StepItem2[] }) {
+function StepList({ steps, showSources }: { steps: StepItem2[]; showSources?: boolean }) {
   if (steps.length === 0) return <p className="text-sm text-gray-400">No steps defined.</p>;
   return (
     <ol className="space-y-3">
@@ -684,6 +715,7 @@ function StepList({ steps }: { steps: StepItem2[] }) {
                   {step.outputs?.length ? <span>Out: {step.outputs.join(", ")}</span> : null}
                 </div>
               ) : null}
+              {showSources && <SourceLinks sources={step.sources} />}
             </div>
           </li>
         );
@@ -692,15 +724,16 @@ function StepList({ steps }: { steps: StepItem2[] }) {
   );
 }
 
-type RoleItem2 = string | { name: string; responsibilities?: string[] };
+type RoleItem2 = string | { name: string; responsibilities?: string[]; sources?: string[] };
 
-function RoleList({ items }: { items: RoleItem2[] }) {
+function RoleList({ items, showSources }: { items: RoleItem2[]; showSources?: boolean }) {
   if (items.length === 0) return <p className="text-sm text-gray-400">None.</p>;
   return (
     <ul className="space-y-2">
       {items.map((item, i) => {
         const name = typeof item === "string" ? item : item.name;
         const responsibilities = typeof item === "string" ? [] : (item.responsibilities ?? []);
+        const sources = typeof item === "string" ? [] : (item.sources ?? []);
         return (
           <li key={i}>
             <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">{name}</span>
@@ -709,6 +742,7 @@ function RoleList({ items }: { items: RoleItem2[] }) {
                 {responsibilities.map((r, j) => <li key={j}>{r}</li>)}
               </ul>
             )}
+            {showSources && <SourceLinks sources={sources} />}
           </li>
         );
       })}
@@ -716,19 +750,23 @@ function RoleList({ items }: { items: RoleItem2[] }) {
   );
 }
 
-type ToolItem2 = string | { name: string; purpose?: string };
+type ToolItem2 = string | { name: string; purpose?: string; sources?: string[] };
 
-function ToolList({ items }: { items: ToolItem2[] }) {
+function ToolList({ items, showSources }: { items: ToolItem2[]; showSources?: boolean }) {
   if (items.length === 0) return <p className="text-sm text-gray-400">None.</p>;
   return (
     <ul className="space-y-1.5">
       {items.map((item, i) => {
         const name = typeof item === "string" ? item : item.name;
         const purpose = typeof item === "string" ? "" : (item.purpose ?? "");
+        const sources = typeof item === "string" ? [] : (item.sources ?? []);
         return (
-          <li key={i} className="flex flex-wrap items-baseline gap-2 text-sm">
-            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">{name}</span>
-            {purpose && <span className="text-xs text-gray-500">{purpose}</span>}
+          <li key={i} className="text-sm">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">{name}</span>
+              {purpose && <span className="text-xs text-gray-500">{purpose}</span>}
+            </div>
+            {showSources && <SourceLinks sources={sources} />}
           </li>
         );
       })}

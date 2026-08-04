@@ -5,7 +5,7 @@ import json
 from openai import AsyncOpenAI
 
 from app.domain.extraction.ports import ExtractionResult, ExtractionSchema
-from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME
+from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME, _BRIEF_INSTRUCTION, _NO_BRIEF_INSTRUCTION
 
 
 class OpenAIExtractionAdapter:
@@ -54,7 +54,7 @@ class OpenAIExtractionAdapter:
             raw_model_output=data,
         )
 
-    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema) -> ExtractionResult:
+    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema, *, brief: str | None = None) -> ExtractionResult:
         user_content = (
             "EXISTING KNOWLEDGE PRODUCT:\n"
             + json.dumps({
@@ -77,10 +77,12 @@ class OpenAIExtractionAdapter:
                 "tools": incoming.tools,
             }, indent=2)
         )
+        brief_instruction = _BRIEF_INSTRUCTION.format(brief=brief) if brief else _NO_BRIEF_INSTRUCTION
+        merge_prompt = MERGE_SYSTEM_PROMPT.format(brief_instruction=brief_instruction)
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": MERGE_SYSTEM_PROMPT},
+                {"role": "system", "content": merge_prompt},
                 {"role": "user", "content": user_content},
             ],
             tools=[{

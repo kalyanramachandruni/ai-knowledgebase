@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.context_package.generator import ContextPackageGenerator
 from app.application.context_package.use_cases import GetContextPackageUseCase
-from app.application.extraction.compiler import CompileFromExtractionUseCase
-from app.application.extraction.use_cases import ExtractKnowledgeFromPageUseCase
+from app.application.curation.compiler import CompileFromCurationUseCase
+from app.application.curation.use_cases import ExtractKnowledgeFromPageUseCase
 from app.application.governance.use_cases import DecideApprovalUseCase, SubmitForReviewUseCase
 from app.application.knowledge_product.use_cases import (
     CompareVersionsUseCase,
@@ -19,7 +19,7 @@ from app.application.knowledge_product.use_cases import (
     TransitionStatusUseCase,
 )
 from app.core.config import settings
-from app.domain.extraction.ports import LLMExtractionPort
+from app.domain.curation.ports import LLMCurationPort
 from app.infrastructure.cache.client import redis_client
 from app.infrastructure.cache.redis_cache import RedisContextPackageCache
 from app.infrastructure.confluence.client import ConfluenceApiClient
@@ -28,12 +28,12 @@ from app.infrastructure.db.confluence_repository import (
     SqlAlchemyConfluencePageRepository,
     SqlAlchemyConfluenceSpaceRepository,
 )
-from app.infrastructure.db.extraction_repository import SqlAlchemyExtractionRunRepository
+from app.infrastructure.db.curation_repository import SqlAlchemyCurationRunRepository
 from app.infrastructure.db.governance_repository import SqlAlchemyApprovalRequestRepository
 from app.infrastructure.db.outbox import SqlAlchemyEventOutbox
 from app.infrastructure.db.repository import SqlAlchemyKnowledgeProductRepository
 from app.infrastructure.db.session import get_session
-from app.infrastructure.llm.factory import get_llm_extraction_port
+from app.infrastructure.llm.factory import get_llm_curation_port
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -106,12 +106,12 @@ ConfluencePageRepositoryDep = Annotated[
 EventOutboxDep = Annotated[SqlAlchemyEventOutbox, Depends(get_event_outbox)]
 
 
-def get_llm_port() -> LLMExtractionPort:
-    return get_llm_extraction_port()
+def get_llm_port() -> LLMCurationPort:
+    return get_llm_curation_port()
 
 
-def get_extraction_repository(session: SessionDep) -> SqlAlchemyExtractionRunRepository:
-    return SqlAlchemyExtractionRunRepository(session)
+def get_curation_repository(session: SessionDep) -> SqlAlchemyCurationRunRepository:
+    return SqlAlchemyCurationRunRepository(session)
 
 
 def _current_llm_model() -> str:
@@ -120,13 +120,13 @@ def _current_llm_model() -> str:
 
 def get_extract_use_case(
     page_repository: Annotated[SqlAlchemyConfluencePageRepository, Depends(get_confluence_page_repository)],
-    extraction_repository: Annotated[SqlAlchemyExtractionRunRepository, Depends(get_extraction_repository)],
-    llm_port: Annotated[LLMExtractionPort, Depends(get_llm_port)],
+    curation_repository: Annotated[SqlAlchemyCurationRunRepository, Depends(get_curation_repository)],
+    llm_port: Annotated[LLMCurationPort, Depends(get_llm_port)],
     outbox: Annotated[SqlAlchemyEventOutbox, Depends(get_event_outbox)],
 ) -> ExtractKnowledgeFromPageUseCase:
     return ExtractKnowledgeFromPageUseCase(
         page_repository,
-        extraction_repository,
+        curation_repository,
         llm_port,
         outbox,
         llm_provider=settings.llm_provider,
@@ -134,14 +134,14 @@ def get_extract_use_case(
     )
 
 
-def get_compile_from_extraction_use_case(
-    extraction_repository: Annotated[SqlAlchemyExtractionRunRepository, Depends(get_extraction_repository)],
+def get_compile_from_curation_use_case(
+    curation_repository: Annotated[SqlAlchemyCurationRunRepository, Depends(get_curation_repository)],
     repository: RepositoryDep,
     create_use_case: Annotated[CreateKnowledgeProductUseCase, Depends(get_create_use_case)],
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
-    llm_port: Annotated[LLMExtractionPort, Depends(get_llm_port)],
-) -> CompileFromExtractionUseCase:
-    return CompileFromExtractionUseCase(extraction_repository, repository, create_use_case, compile_use_case, llm_port)
+    llm_port: Annotated[LLMCurationPort, Depends(get_llm_port)],
+) -> CompileFromCurationUseCase:
+    return CompileFromCurationUseCase(curation_repository, repository, create_use_case, compile_use_case, llm_port)
 
 
 def get_context_package_cache() -> RedisContextPackageCache:

@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
+RUN playwright install chromium --with-deps
 
 COPY app ./app
 COPY migrations ./migrations

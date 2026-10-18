@@ -76,7 +76,7 @@ class CreateKnowledgeProductUseCase:
 
 class CompileNewVersionUseCase:
     """Adds a new version to an existing product — used by both manual edits (UI) and the
-    extraction→compile pipeline (step 4)."""
+    curation→compile pipeline (step 4)."""
 
     def __init__(self, repository: KnowledgeProductRepository, audit: AuditPort) -> None:
         self._repository = repository

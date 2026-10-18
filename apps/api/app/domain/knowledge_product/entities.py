@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
+from datetime import datetime
 
 from app.domain.knowledge_product.events import (
     ProductCompiled,
@@ -49,6 +51,8 @@ class KnowledgeProductVersion:
     status: KnowledgeProductStatus = KnowledgeProductStatus.DRAFT
     source_extraction_run_id: uuid.UUID | None = None
     process_overview: dict = field(default_factory=dict)
+    compiled_at: datetime | None = None
+    compiled_at: datetime | None = None
 
     def to_canonical_dict(self, *, product_key: str, name: str, owner: str) -> dict:
         """Shape matching the canonical Knowledge Product YAML schema."""

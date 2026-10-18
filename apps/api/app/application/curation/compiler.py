@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.application.extraction.exceptions import ExtractionRunNotFound, ExtractionRunNotSucceeded
+from app.application.curation.exceptions import CurationRunNotFound, CurationRunNotSucceeded
 from app.application.knowledge_product.dto import (
     CompileKnowledgeProductInput,
     CreateKnowledgeProductInput,
@@ -13,17 +13,17 @@ from app.application.knowledge_product.dto import (
     ToolInput,
 )
 from app.application.knowledge_product.use_cases import CompileNewVersionUseCase, CreateKnowledgeProductUseCase
-from app.domain.extraction.entities import ExtractionStatus
-from app.domain.extraction.ports import ExtractionResult, LLMExtractionPort
-from app.domain.extraction.repository import ExtractionRunRepository
-from app.domain.extraction.schema import KNOWLEDGE_EXTRACTION_SCHEMA
+from app.domain.curation.entities import CurationStatus
+from app.domain.curation.ports import CurationResult, LLMCurationPort
+from app.domain.curation.repository import CurationRunRepository
+from app.domain.curation.schema import KNOWLEDGE_CURATION_SCHEMA
 from app.domain.knowledge_product.entities import KnowledgeProduct, KnowledgeProductVersion
 from app.domain.knowledge_product.repository import KnowledgeProductRepository
 from app.domain.knowledge_product.value_objects import VersionBump
 
 
-def _version_to_extraction_result(version: KnowledgeProductVersion) -> ExtractionResult:
-    """Convert an existing compiled version back into ExtractionResult for LLM merge."""
+def _version_to_curation_result(version: KnowledgeProductVersion) -> CurationResult:
+    """Convert an existing compiled version back into CurationResult for LLM merge."""
     steps = []
     for s in sorted(version.process_steps, key=lambda s: s.sequence):
         step: dict = {"name": s.name}
@@ -39,6 +39,7 @@ def _version_to_extraction_result(version: KnowledgeProductVersion) -> Extractio
             step["decision"] = s.decision
         if s.tools_used:
             step["tools_used"] = list(s.tools_used)
+        step["sources"] = list(s.sources)
         steps.append(step)
 
     roles = []
@@ -46,6 +47,7 @@ def _version_to_extraction_result(version: KnowledgeProductVersion) -> Extractio
         role_dict: dict = {"name": r.name}
         if r.responsibilities:
             role_dict["responsibilities"] = list(r.responsibilities)
+        role_dict["sources"] = list(r.sources)
         roles.append(role_dict)
 
     tools = []
@@ -53,22 +55,23 @@ def _version_to_extraction_result(version: KnowledgeProductVersion) -> Extractio
         tool_dict: dict = {"name": t.display_name or t.key}
         if t.purpose:
             tool_dict["purpose"] = t.purpose
+        tool_dict["sources"] = list(t.sources)
         tools.append(tool_dict)
 
-    return ExtractionResult(
+    return CurationResult(
         process_overview=version.process_overview or {},
         process_steps=steps,
         rules=[
-            {k: v for k, v in {"condition": r.condition, "action": r.action, "rationale": r.rationale}.items() if v}
+            {k: v for k, v in {"condition": r.condition, "action": r.action, "rationale": r.rationale, "sources": list(r.sources)}.items() if v is not None}
             for r in version.rules
         ],
         policies=[
-            {k: v for k, v in {"condition": p.condition, "action": p.action, "rationale": p.rationale}.items() if v}
+            {k: v for k, v in {"condition": p.condition, "action": p.action, "rationale": p.rationale, "sources": list(p.sources)}.items() if v is not None}
             for p in version.policies
         ],
         sla_target=version.sla.target if version.sla else None,
         escalations=[
-            {k: v for k, v in {"after": e.after, "escalate_to": e.escalate_to, "action": e.action}.items() if v}
+            {k: v for k, v in {"after": e.after, "escalate_to": e.escalate_to, "action": e.action, "sources": list(e.sources)}.items() if v is not None}
             for e in version.escalations
         ],
         roles=roles,
@@ -77,17 +80,17 @@ def _version_to_extraction_result(version: KnowledgeProductVersion) -> Extractio
     )
 
 
-def _extraction_result_to_compile_input(
-    result: ExtractionResult,
+def _curation_result_to_compile_input(
+    result: CurationResult,
     *,
     created_by: uuid.UUID,
     bump: VersionBump,
-    source_extraction_run_id: uuid.UUID,
+    source_curation_run_id: uuid.UUID,
 ) -> CompileKnowledgeProductInput:
     steps = []
     for s in result.process_steps:
         if isinstance(s, str):
-            # backward compat: old extraction runs stored steps as plain strings
+            # backward compat: old curation runs stored steps as plain strings
             steps.append(ProcessStepInput(name=s))
         else:
             steps.append(ProcessStepInput(
@@ -134,26 +137,26 @@ def _extraction_result_to_compile_input(
         tools=tools,
         created_by=created_by,
         bump=bump,
-        source_extraction_run_id=source_extraction_run_id,
+        source_extraction_run_id=source_curation_run_id,
     )
 
 
-class CompileFromExtractionUseCase:
+class CompileFromCurationUseCase:
     """Capability 3: Knowledge Product Compiler. Maps a succeeded
-    ExtractionRun's structured draft into the canonical Knowledge Product
+    CurationRun's structured draft into the canonical Knowledge Product
     shape and hands it to the registry — creating the product if its
     product_key doesn't exist yet, or using the LLM to intelligently merge
-    the new extraction with the existing version if it does."""
+    the new curation with the existing version if it does."""
 
     def __init__(
         self,
-        extraction_repository: ExtractionRunRepository,
+        curation_repository: CurationRunRepository,
         knowledge_product_repository: KnowledgeProductRepository,
         create_use_case: CreateKnowledgeProductUseCase,
         compile_new_version_use_case: CompileNewVersionUseCase,
-        llm_port: LLMExtractionPort,
+        llm_port: LLMCurationPort,
     ) -> None:
-        self._extraction_repository = extraction_repository
+        self._curation_repository = curation_repository
         self._knowledge_product_repository = knowledge_product_repository
         self._create_use_case = create_use_case
         self._compile_new_version_use_case = compile_new_version_use_case
@@ -169,14 +172,14 @@ class CompileFromExtractionUseCase:
         created_by: uuid.UUID,
         bump: VersionBump = VersionBump.MINOR,
     ) -> KnowledgeProduct:
-        run = await self._extraction_repository.get_by_id(run_id)
+        run = await self._curation_repository.get_by_id(run_id)
         if run is None:
-            raise ExtractionRunNotFound(f"Extraction run {run_id} not found")
-        if run.status is not ExtractionStatus.SUCCEEDED or run.structured_draft is None:
-            raise ExtractionRunNotSucceeded(f"Extraction run {run_id} has not succeeded; cannot compile")
+            raise CurationRunNotFound(f"Curation run {run_id} not found")
+        if run.status is not CurationStatus.SUCCEEDED or run.structured_draft is None:
+            raise CurationRunNotSucceeded(f"Curation run {run_id} has not succeeded; cannot compile")
 
         draft = run.structured_draft
-        incoming = ExtractionResult(
+        incoming = CurationResult(
             process_overview=draft.get("process_overview", {}),
             process_steps=draft.get("process_steps", []),
             rules=draft.get("rules", []),
@@ -190,8 +193,8 @@ class CompileFromExtractionUseCase:
 
         existing = await self._knowledge_product_repository.get_by_key(product_key)
         if existing is None:
-            compile_input = _extraction_result_to_compile_input(
-                incoming, created_by=created_by, bump=bump, source_extraction_run_id=run_id
+            compile_input = _curation_result_to_compile_input(
+                incoming, created_by=created_by, bump=bump, source_curation_run_id=run_id
             )
             return await self._create_use_case.execute(
                 CreateKnowledgeProductInput(
@@ -200,11 +203,11 @@ class CompileFromExtractionUseCase:
             )
 
         # LLM-based merge: ask the model to intelligently combine existing
-        # version content with the new extraction rather than blindly appending.
-        existing_result = _version_to_extraction_result(existing.current_version)
-        merged = await self._llm_port.merge(existing_result, incoming, KNOWLEDGE_EXTRACTION_SCHEMA)
-        compile_input = _extraction_result_to_compile_input(
-            merged, created_by=created_by, bump=bump, source_extraction_run_id=run_id
+        # version content with the new curation rather than blindly appending.
+        existing_result = _version_to_curation_result(existing.current_version)
+        merged, _ = await self._llm_port.merge(existing_result, incoming, KNOWLEDGE_CURATION_SCHEMA)
+        compile_input = _curation_result_to_compile_input(
+            merged, created_by=created_by, bump=bump, source_curation_run_id=run_id
         )
         await self._compile_new_version_use_case.execute(existing.id, compile_input)
         return await self._knowledge_product_repository.get_by_id(existing.id)

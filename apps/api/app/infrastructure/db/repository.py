@@ -93,6 +93,7 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
         created_by=row.created_by,
         source_extraction_run_id=row.source_extraction_entry_id,
         process_overview=content.get("process_overview") or {},
+        compiled_at=row.compiled_at,
     )
 
 
@@ -213,6 +214,7 @@ class SqlAlchemyKnowledgeProductRepository:
                         yaml_content=content,
                         source_extraction_entry_id=version.source_extraction_run_id,
                         created_by=version.created_by,
+                        compiled_at=utc_now(),
                     )
                 )
             else:

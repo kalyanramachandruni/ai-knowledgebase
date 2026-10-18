@@ -7,13 +7,13 @@ from app.domain.shared.base import DomainEvent
 
 
 @dataclass
-class KnowledgeExtracted(DomainEvent):
+class KnowledgeCurated(DomainEvent):
     run_id: uuid.UUID
     page_id: uuid.UUID
 
 
 @dataclass
-class ExtractionFailed(DomainEvent):
+class CurationFailed(DomainEvent):
     run_id: uuid.UUID
     page_id: uuid.UUID
     error_message: str

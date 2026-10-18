@@ -1,0 +1,5 @@
+-- Add 'not_relevant' to kp_compile_session_entry status values
+-- (PostgreSQL has no enum here; status is a plain varchar — no constraint to change)
+-- This migration is documentation only; no DDL needed.
+-- 'not_relevant' is a new valid value for kp_compile_session_entry.status alongside
+-- compiled | discarded | skipped | pending | running | failed

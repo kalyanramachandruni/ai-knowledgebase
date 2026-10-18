@@ -56,7 +56,7 @@ from app.api.deps import SessionDep
 from app.core.security import CurrentUser, get_current_user, require_roles
 from app.domain.governance.value_objects import Role
 from app.domain.knowledge_product.value_objects import KnowledgeProductStatus
-from app.infrastructure.db.models import CompileSession, CompileSessionEntry
+from app.infrastructure.db.models import KpCompileSession as CompileSession, KpCompileSessionEntry as CompileSessionEntry
 
 router = APIRouter(prefix="/knowledge-products", tags=["knowledge-products"])
 
@@ -372,7 +372,7 @@ async def get_compiled_pages(
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "pages": [
                 {
-                    "run_id": str(e.entry_id) if e.entry_id else None,
+                    "run_id": str(e.curation_entry_id) if e.curation_entry_id else None,
                     "page_id": str(e.page_id) if e.page_id else None,
                     "title": e.page_title,
                     "status": e.status,

@@ -7,12 +7,12 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.extraction.entities import ExtractionRun, ExtractionStatus, PageSourceType
+from app.domain.curation.entities import CurationRun, CurationStatus, PageSourceType
 from app.infrastructure.db.models import (
-    CompileSession,
-    CompileSessionEntry,
-    ExtractionSession as ExtractionSessionModel,
-    ExtractionSessionEntry as ExtractionSessionEntryModel,
+    KpCompileSession as CompileSession,
+    KpCompileSessionEntry as CompileSessionEntry,
+    PageCurationSession as CurationSessionModel,
+    PageCurationSessionEntry as CurationSessionEntryModel,
 )
 
 
@@ -30,12 +30,12 @@ def _coerce_draft(draft: object) -> dict | None:
     return None
 
 
-def _to_domain(
-    entry: ExtractionSessionEntryModel,
-    session: ExtractionSessionModel,
+def _to_curation_result(
+    entry: CurationSessionEntryModel,
+    session: CurationSessionModel,
     compile_entry: CompileSessionEntry | None = None,
     compile_version_id: uuid.UUID | None = None,
-) -> ExtractionRun:
+) -> CurationRun:
     compile_status: str | None = None
     compiled_at: datetime | None = None
     compile_error: str | None = None
@@ -48,12 +48,12 @@ def _to_domain(
             compile_status = "failed"
             compile_error = compile_entry.reason
 
-    return ExtractionRun(
+    return CurationRun(
         id=entry.id,
         session_id=entry.session_id,
         page_id=entry.page_id,
         page_source_type=PageSourceType(entry.page_source_type) if entry.page_source_type else None,
-        status=ExtractionStatus(entry.status),
+        status=CurationStatus(entry.status),
         structured_draft=_coerce_draft(entry.structured_draft),
         error_message=entry.error_message,
         llm_provider=session.llm_provider,
@@ -77,93 +77,114 @@ async def _latest_compile_per_entry(
     rows = (await db.execute(
         select(CompileSessionEntry, CompileSession.version_id)
         .join(CompileSession, CompileSession.id == CompileSessionEntry.session_id)
-        .where(CompileSessionEntry.entry_id.in_(entry_ids))
+        .where(CompileSessionEntry.curation_entry_id.in_(entry_ids))
         .order_by(CompileSessionEntry.created_at.desc())
     )).all()
 
     result: dict[uuid.UUID, tuple[CompileSessionEntry, uuid.UUID | None]] = {}
     for cse, version_id in rows:
-        if cse.entry_id not in result:
-            result[cse.entry_id] = (cse, version_id)
+        if cse.curation_entry_id not in result:
+            result[cse.curation_entry_id] = (cse, version_id)
     return result
 
 
-class SqlAlchemyExtractionRunRepository:
-    """Handles extraction_session + extraction_session_entry as a unified flat ExtractionRun."""
+class SqlAlchemyCurationRunRepository:
+    """Handles page_curation_session + page_curation_session_entry as a unified flat CurationRun."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_by_pages(self, page_ids: list[uuid.UUID]) -> list[ExtractionRun]:
+    async def get_latest_succeeded_by_pages(self, page_ids: list[uuid.UUID]) -> list[CurationRun]:
+        """Return the single most-recent succeeded run per page. Pages with no succeeded run are omitted."""
         if not page_ids:
             return []
         rows = (await self._session.execute(
-            select(ExtractionSessionEntryModel, ExtractionSessionModel)
-            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
-            .where(ExtractionSessionEntryModel.page_id.in_(page_ids))
-            .order_by(ExtractionSessionModel.started_at.desc())
-        )).all()
-        entry_ids = [entry.id for entry, _ in rows]
-        compile_map = await _latest_compile_per_entry(self._session, entry_ids)
-        return [_to_domain(e, s, *compile_map.get(e.id, (None, None))) for e, s in rows]
-
-    async def list_by_page(self, page_id: uuid.UUID) -> list[ExtractionRun]:
-        rows = (await self._session.execute(
-            select(ExtractionSessionEntryModel, ExtractionSessionModel)
-            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
-            .where(ExtractionSessionEntryModel.page_id == page_id)
-            .order_by(ExtractionSessionModel.started_at.desc())
-        )).all()
-        entry_ids = [entry.id for entry, _ in rows]
-        compile_map = await _latest_compile_per_entry(self._session, entry_ids)
-        return [_to_domain(e, s, *compile_map.get(e.id, (None, None))) for e, s in rows]
-
-    async def get_by_id(self, run_id: uuid.UUID) -> ExtractionRun | None:
-        row = (await self._session.execute(
-            select(ExtractionSessionEntryModel, ExtractionSessionModel)
-            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
-            .where(ExtractionSessionEntryModel.id == run_id)
-        )).first()
-        if row is None:
-            return None
-        entry, session = row
-        compile_map = await _latest_compile_per_entry(self._session, [entry.id])
-        cse, vid = compile_map.get(entry.id, (None, None))
-        return _to_domain(entry, session, cse, vid)
-
-    async def list_pending_compile(self, page_ids: list[uuid.UUID]) -> list[ExtractionRun]:
-        """Most recent succeeded entry per page that has no compiled compile_session_entry."""
-        if not page_ids:
-            return []
-        # Subquery: entry_ids that already have a 'compiled' compile_session_entry
-        compiled_entry_ids_stmt = select(CompileSessionEntry.entry_id).where(
-            CompileSessionEntry.status == "compiled",
-            CompileSessionEntry.entry_id.isnot(None),
-        )
-        rows = (await self._session.execute(
-            select(ExtractionSessionEntryModel, ExtractionSessionModel)
-            .join(ExtractionSessionModel, ExtractionSessionModel.id == ExtractionSessionEntryModel.session_id)
+            select(CurationSessionEntryModel, CurationSessionModel)
+            .join(CurationSessionModel, CurationSessionModel.id == CurationSessionEntryModel.session_id)
             .where(
-                ExtractionSessionEntryModel.page_id.in_(page_ids),
-                ExtractionSessionEntryModel.status == "succeeded",
-                ExtractionSessionEntryModel.id.not_in(compiled_entry_ids_stmt),
+                CurationSessionEntryModel.page_id.in_(page_ids),
+                CurationSessionEntryModel.status == "succeeded",
             )
-            .order_by(ExtractionSessionModel.started_at.desc())
+            .order_by(CurationSessionModel.started_at.desc())
         )).all()
         seen: set[uuid.UUID] = set()
         result = []
         for entry, session in rows:
             if entry.page_id not in seen:
                 seen.add(entry.page_id)
-                result.append(_to_domain(entry, session))
+                result.append(_to_curation_result(entry, session))
         return result
 
-    async def save(self, run: ExtractionRun) -> ExtractionRun:
+    async def list_by_pages(self, page_ids: list[uuid.UUID]) -> list[CurationRun]:
+        if not page_ids:
+            return []
+        rows = (await self._session.execute(
+            select(CurationSessionEntryModel, CurationSessionModel)
+            .join(CurationSessionModel, CurationSessionModel.id == CurationSessionEntryModel.session_id)
+            .where(CurationSessionEntryModel.page_id.in_(page_ids))
+            .order_by(CurationSessionModel.started_at.desc())
+        )).all()
+        entry_ids = [entry.id for entry, _ in rows]
+        compile_map = await _latest_compile_per_entry(self._session, entry_ids)
+        return [_to_curation_result(e, s, *compile_map.get(e.id, (None, None))) for e, s in rows]
+
+    async def list_by_page(self, page_id: uuid.UUID) -> list[CurationRun]:
+        rows = (await self._session.execute(
+            select(CurationSessionEntryModel, CurationSessionModel)
+            .join(CurationSessionModel, CurationSessionModel.id == CurationSessionEntryModel.session_id)
+            .where(CurationSessionEntryModel.page_id == page_id)
+            .order_by(CurationSessionModel.started_at.desc())
+        )).all()
+        entry_ids = [entry.id for entry, _ in rows]
+        compile_map = await _latest_compile_per_entry(self._session, entry_ids)
+        return [_to_curation_result(e, s, *compile_map.get(e.id, (None, None))) for e, s in rows]
+
+    async def get_by_id(self, run_id: uuid.UUID) -> CurationRun | None:
+        row = (await self._session.execute(
+            select(CurationSessionEntryModel, CurationSessionModel)
+            .join(CurationSessionModel, CurationSessionModel.id == CurationSessionEntryModel.session_id)
+            .where(CurationSessionEntryModel.id == run_id)
+        )).first()
+        if row is None:
+            return None
+        entry, session = row
+        compile_map = await _latest_compile_per_entry(self._session, [entry.id])
+        cse, vid = compile_map.get(entry.id, (None, None))
+        return _to_curation_result(entry, session, cse, vid)
+
+    async def list_pending_compile(self, page_ids: list[uuid.UUID]) -> list[CurationRun]:
+        """Most recent succeeded entry per page that has no compiled compile_session_entry."""
+        if not page_ids:
+            return []
+        # Subquery: entry_ids that already have a 'compiled' compile_session_entry
+        compiled_entry_ids_stmt = select(CompileSessionEntry.curation_entry_id).where(
+            CompileSessionEntry.status == "compiled",
+            CompileSessionEntry.curation_entry_id.isnot(None),
+        )
+        rows = (await self._session.execute(
+            select(CurationSessionEntryModel, CurationSessionModel)
+            .join(CurationSessionModel, CurationSessionModel.id == CurationSessionEntryModel.session_id)
+            .where(
+                CurationSessionEntryModel.page_id.in_(page_ids),
+                CurationSessionEntryModel.status == "succeeded",
+                CurationSessionEntryModel.id.not_in(compiled_entry_ids_stmt),
+            )
+            .order_by(CurationSessionModel.started_at.desc())
+        )).all()
+        seen: set[uuid.UUID] = set()
+        result = []
+        for entry, session in rows:
+            if entry.page_id not in seen:
+                seen.add(entry.page_id)
+                result.append(_to_curation_result(entry, session))
+        return result
+
+    async def save(self, run: CurationRun) -> CurationRun:
         """Create or update a session+entry pair atomically."""
-        entry_row = await self._session.get(ExtractionSessionEntryModel, run.id)
+        entry_row = await self._session.get(CurationSessionEntryModel, run.id)
         if entry_row is None:
             # Create a new session for this run
-            session_row = ExtractionSessionModel(
+            session_row = CurationSessionModel(
                 id=uuid.uuid4(),
                 llm_provider=run.llm_provider,
                 llm_model=run.llm_model,
@@ -174,7 +195,7 @@ class SqlAlchemyExtractionRunRepository:
             self._session.add(session_row)
             await self._session.flush()
 
-            entry_row = ExtractionSessionEntryModel(
+            entry_row = CurationSessionEntryModel(
                 id=run.id,
                 session_id=session_row.id,
                 page_id=run.page_id,
@@ -190,16 +211,16 @@ class SqlAlchemyExtractionRunRepository:
             entry_row.error_message = run.error_message
 
             # Update session completed_at and status on completion
-            session_row = await self._session.get(ExtractionSessionModel, entry_row.session_id)
+            session_row = await self._session.get(CurationSessionModel, entry_row.session_id)
             if session_row and run.completed_at:
                 session_row.completed_at = run.completed_at
                 session_row.status = run.status.value
 
         await self._session.flush()
         await self._session.commit()
-        return _to_domain(
+        return _to_curation_result(
             entry_row,
-            session_row if entry_row.session_id else ExtractionSessionModel(
+            session_row if entry_row.session_id else CurationSessionModel(
                 llm_provider=run.llm_provider, llm_model=run.llm_model,
                 started_at=run.started_at, completed_at=run.completed_at,
             ),

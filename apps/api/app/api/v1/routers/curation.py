@@ -15,44 +15,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     SessionDep,
-    get_compile_from_extraction_use_case,
+    get_compile_from_curation_use_case,
     get_compile_use_case,
     get_create_use_case,
     get_extract_use_case,
     get_llm_port,
     get_repository,
 )
-from app.api.v1.extraction_schemas import (
-    CompileFromExtractionRequest,
+from app.api.v1.curation_schemas import (
+    CompileFromCurationRequest,
     CompiledProductSummary,
-    ExtractionRunResponse,
-    ExtractionRunWithProductResponse,
+    CurationRunResponse,
+    CurationRunWithProductResponse,
 )
 from app.api.v1.schemas import KnowledgeProductResponse
-from app.application.extraction.compiler import (
-    CompileFromExtractionUseCase,
-    _extraction_result_to_compile_input,
-    _version_to_extraction_result,
+from app.application.curation.compiler import (
+    CompileFromCurationUseCase,
+    _curation_result_to_compile_input,
+    _version_to_curation_result,
 )
-from app.application.extraction.exceptions import (
+from app.application.curation.exceptions import (
     ConfluencePageNotFound,
-    ExtractionRunNotFound,
-    ExtractionRunNotSucceeded,
+    CurationRunNotFound,
+    CurationRunNotSucceeded,
 )
-from app.application.extraction.use_cases import ExtractKnowledgeFromPageUseCase
+from app.application.curation.use_cases import ExtractKnowledgeFromPageUseCase
 from app.application.knowledge_product.dto import CreateKnowledgeProductInput
 from app.application.knowledge_product.use_cases import CompileNewVersionUseCase, CreateKnowledgeProductUseCase
 from app.core.security import CurrentUser, require_roles
-from app.domain.extraction.entities import ExtractionStatus, PageSourceType
-from app.domain.extraction.ports import ExtractionResult, LLMExtractionPort
-from app.domain.extraction.schema import KNOWLEDGE_EXTRACTION_SCHEMA
+from app.domain.curation.entities import CurationRun, CurationStatus, PageSourceType
+from app.domain.curation.ports import CurationResult, LLMCurationPort
+from app.domain.curation.schema import KNOWLEDGE_CURATION_SCHEMA
 from app.domain.governance.value_objects import Role
 from app.domain.knowledge_product.value_objects import VersionBump
-from app.infrastructure.db.extraction_repository import SqlAlchemyExtractionRunRepository
+from app.infrastructure.db.curation_repository import SqlAlchemyCurationRunRepository
 from app.infrastructure.db.models import KnowledgeProductModel, KnowledgeProductVersionModel
 from app.infrastructure.db.repository import SqlAlchemyKnowledgeProductRepository
 
-router = APIRouter(tags=["extraction"])
+router = APIRouter(tags=["curation"])
 
 _OWNER_OR_ADMIN = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN)
 _ANY_ROLE = require_roles(Role.KNOWLEDGE_OWNER, Role.ADMIN, Role.REVIEWER, Role.CONSUMER)
@@ -117,19 +117,19 @@ async def _fetch_version_map(
 
 
 def _run_to_response(
-    r,  # ExtractionRun domain entity
+    r,  # CurationRun domain entity
     version_map: dict[uuid.UUID, CompiledProductSummary],
     entry_to_version: dict[uuid.UUID, uuid.UUID],
     prev_compiled_product: CompiledProductSummary | None = None,
     prev_compiled_at: str | None = None,
-) -> ExtractionRunWithProductResponse:
+) -> CurationRunWithProductResponse:
     compiled_product: CompiledProductSummary | None = None
     if r.compiled_version_id:
         compiled_product = version_map.get(r.compiled_version_id)
     elif r.id in entry_to_version:
         compiled_product = version_map.get(entry_to_version[r.id])
 
-    return ExtractionRunWithProductResponse(
+    return CurationRunWithProductResponse(
         id=r.id, page_id=r.page_id, status=r.status.value if hasattr(r.status, "value") else r.status,
         llm_provider=r.llm_provider, llm_model=r.llm_model,
         structured_draft=r.structured_draft, error_message=r.error_message,
@@ -144,13 +144,13 @@ def _run_to_response(
     )
 
 
-@router.get("/confluence/extraction-history", response_model=dict[str, list[ExtractionRunWithProductResponse]])
-async def get_bulk_extraction_history(
+@router.get("/confluence/curation-history", response_model=dict[str, list[CurationRunWithProductResponse]])
+async def get_bulk_curation_history(
     session: SessionDep,
     _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
     space_key: str | None = None,
-) -> dict[str, list[ExtractionRunWithProductResponse]]:
-    """Return extraction history for all pages (optionally filtered by space_key) in one query."""
+) -> dict[str, list[CurationRunWithProductResponse]]:
+    """Return curation history for all pages (optionally filtered by space_key) in one query."""
     from app.infrastructure.db.models import ConfluencePage as ConfluencePageModel, ConfluenceSpace as ConfluenceSpaceModel
 
     page_id_stmt = select(ConfluencePageModel.id)
@@ -164,7 +164,7 @@ async def get_bulk_extraction_history(
     if not page_ids:
         return {}
 
-    repo = SqlAlchemyExtractionRunRepository(session)
+    repo = SqlAlchemyCurationRunRepository(session)
     all_runs = await repo.list_by_pages(page_ids)
     runs = [r for r in all_runs if r.page_source_type == PageSourceType.CONFLUENCE]
 
@@ -188,7 +188,7 @@ async def get_bulk_extraction_history(
             elif pid not in page_second_success:
                 page_second_success[pid] = (product, compiled_at_str)
 
-    result: dict[str, list[ExtractionRunWithProductResponse]] = {}
+    result: dict[str, list[CurationRunWithProductResponse]] = {}
     for r in runs:
         pid = str(r.page_id)
         prev_product: CompiledProductSummary | None = None
@@ -207,21 +207,21 @@ async def get_bulk_extraction_history(
 
 
 
-@router.post("/confluence/pages/{page_id}/smart-extract", response_model=ExtractionRunResponse)
-async def smart_extract_page(
+@router.post("/confluence/pages/{page_id}/smart-curate", response_model=CurationRunResponse)
+async def smart_curate_page(
     page_id: uuid.UUID,
     session: SessionDep,
     use_case: Annotated[ExtractKnowledgeFromPageUseCase, Depends(get_extract_use_case)],
     _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
-) -> ExtractionRunResponse:
-    """Return cached run if page unchanged since last extraction, else run fresh LLM extraction."""
+) -> CurationRunResponse:
+    """Return cached run if page unchanged since last curation, else run fresh LLM curation."""
     from app.infrastructure.db.models import ConfluencePage as ConfluencePageModel
 
     page = await session.get(ConfluencePageModel, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    repo = SqlAlchemyExtractionRunRepository(session)
+    repo = SqlAlchemyCurationRunRepository(session)
     runs = await repo.list_by_page(page_id)
     for run in runs:  # sorted desc by started_at
         started = run.started_at
@@ -233,11 +233,11 @@ async def smart_extract_page(
             from datetime import timezone as _tz
             lm = lm.replace(tzinfo=_tz.utc)
         if (
-            run.status is ExtractionStatus.SUCCEEDED
+            run.status is CurationStatus.SUCCEEDED
             and started is not None
             and started > lm
         ):
-            return ExtractionRunResponse(
+            return CurationRunResponse(
                 id=run.id, page_id=run.page_id, status=run.status.value,
                 llm_provider=run.llm_provider, llm_model=run.llm_model,
                 structured_draft=run.structured_draft, error_message=run.error_message,
@@ -248,7 +248,7 @@ async def smart_extract_page(
         run = await use_case.execute(page_id, source_url=await _confluence_page_url(page, session))
     except ConfluencePageNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return ExtractionRunResponse(
+    return CurationRunResponse(
         id=run.id, page_id=run.page_id, status=run.status.value,
         llm_provider=run.llm_provider, llm_model=run.llm_model,
         structured_draft=run.structured_draft, error_message=run.error_message,
@@ -256,33 +256,33 @@ async def smart_extract_page(
     )
 
 
-@router.post("/confluence/pages/{page_id}/extract", response_model=ExtractionRunResponse)
-async def extract_page(
+@router.post("/confluence/pages/{page_id}/curate", response_model=CurationRunResponse)
+async def curate_page(
     page_id: uuid.UUID,
     session: SessionDep,
     use_case: Annotated[ExtractKnowledgeFromPageUseCase, Depends(get_extract_use_case)],
     _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
-) -> ExtractionRunResponse:
+) -> CurationRunResponse:
     from app.infrastructure.db.models import ConfluencePage as ConfluencePageModel
     page = await session.get(ConfluencePageModel, page_id)
     try:
         run = await use_case.execute(page_id, source_url=await _confluence_page_url(page, session))
     except ConfluencePageNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return ExtractionRunResponse(
+    return CurationRunResponse(
         id=run.id, page_id=run.page_id, status=run.status.value,
         llm_provider=run.llm_provider, llm_model=run.llm_model,
         structured_draft=run.structured_draft, error_message=run.error_message,
     )
 
 
-@router.get("/confluence/pages/{page_id}/extraction-history", response_model=list[ExtractionRunWithProductResponse])
-async def get_page_extraction_history(
+@router.get("/confluence/pages/{page_id}/curation-history", response_model=list[CurationRunWithProductResponse])
+async def get_page_curation_history(
     page_id: uuid.UUID,
     session: SessionDep,
     _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
-) -> list[ExtractionRunWithProductResponse]:
-    repo = SqlAlchemyExtractionRunRepository(session)
+) -> list[CurationRunWithProductResponse]:
+    repo = SqlAlchemyCurationRunRepository(session)
     runs = await repo.list_by_page(page_id)
     runs = [r for r in runs if r.page_source_type == PageSourceType.CONFLUENCE]
 
@@ -318,7 +318,7 @@ async def get_page_extraction_history(
 
 
 class BatchCompileRequest(BaseModel):
-    run_ids: list[uuid.UUID]
+    page_ids: list[uuid.UUID]
     product_key: str
     name: str
     owner: str
@@ -326,28 +326,42 @@ class BatchCompileRequest(BaseModel):
     bump: VersionBump = VersionBump.MINOR
 
 
-@router.post("/extraction-runs/batch-compile", response_model=KnowledgeProductResponse)
-async def batch_compile_from_extractions(
+@router.post("/curation-runs/batch-compile", response_model=KnowledgeProductResponse)
+async def batch_compile_from_curations(
     payload: BatchCompileRequest,
     session: SessionDep,
-    llm_port: Annotated[LLMExtractionPort, Depends(get_llm_port)],
+    llm_port: Annotated[LLMCurationPort, Depends(get_llm_port)],
     repository: Annotated[SqlAlchemyKnowledgeProductRepository, Depends(get_repository)],
     create_use_case: Annotated[CreateKnowledgeProductUseCase, Depends(get_create_use_case)],
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
     _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
-    """LLM-merge multiple extraction drafts into one, compile a single KP version, mark runs."""
-    repo = SqlAlchemyExtractionRunRepository(session)
+    """Resolve the latest succeeded run per page, merge drafts, compile a single KP version."""
+    repo = SqlAlchemyCurationRunRepository(session)
 
-    # Collect valid succeeded drafts; track which run_ids contributed
-    results: list[ExtractionResult] = []
+    # Resolve latest succeeded run per page — backend is authoritative, not the caller
+    runs = await repo.get_latest_succeeded_by_pages(payload.page_ids)
+
+    # Reject any page whose latest run is not succeeded (failed or running)
+    all_runs_by_page = await repo.list_by_pages(payload.page_ids)
+    latest_by_page: dict[uuid.UUID, CurationRun] = {}
+    for r in all_runs_by_page:
+        if r.page_id not in latest_by_page:
+            latest_by_page[r.page_id] = r
+    blocked = [str(pid) for pid in payload.page_ids if latest_by_page.get(pid) and latest_by_page[pid].status is not CurationStatus.SUCCEEDED]
+    if blocked:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pages have failed or running curations — re-curate before compiling: {', '.join(blocked)}"
+        )
+
+    results: list[CurationResult] = []
     contributing_run_ids: list[uuid.UUID] = []
-    for run_id in payload.run_ids:
-        run = await repo.get_by_id(run_id)
-        if run is None or run.status is not ExtractionStatus.SUCCEEDED or not run.structured_draft:
+    for run in runs:
+        if not run.structured_draft:
             continue
         draft = run.structured_draft
-        results.append(ExtractionResult(
+        results.append(CurationResult(
             process_overview=draft.get("process_overview", {}),
             process_steps=draft.get("process_steps", []),
             rules=draft.get("rules", []),
@@ -358,18 +372,18 @@ async def batch_compile_from_extractions(
             tools=draft.get("tools", []),
             raw_model_output=draft,
         ))
-        contributing_run_ids.append(run_id)
+        contributing_run_ids.append(run.id)
 
     if not results:
-        raise HTTPException(status_code=422, detail="No succeeded extraction runs found in the provided IDs")
+        raise HTTPException(status_code=422, detail="No succeeded curation runs found for the provided pages")
 
     try:
         merged = results[0]
         for next_result in results[1:]:
-            merged = await llm_port.merge(merged, next_result, KNOWLEDGE_EXTRACTION_SCHEMA)
+            merged = await llm_port.merge(merged, next_result, KNOWLEDGE_CURATION_SCHEMA)
 
-        compile_input = _extraction_result_to_compile_input(
-            merged, created_by=payload.created_by, bump=payload.bump, source_extraction_run_id=None,
+        compile_input = _curation_result_to_compile_input(
+            merged, created_by=payload.created_by, bump=payload.bump, source_curation_run_id=None,
         )
 
         existing = await repository.get_by_key(payload.product_key)
@@ -383,10 +397,10 @@ async def batch_compile_from_extractions(
                 )
             )
         else:
-            existing_result = _version_to_extraction_result(existing.current_version)
-            final_merged = await llm_port.merge(existing_result, merged, KNOWLEDGE_EXTRACTION_SCHEMA)
-            final_input = _extraction_result_to_compile_input(
-                final_merged, created_by=payload.created_by, bump=payload.bump, source_extraction_run_id=None,
+            existing_result = _version_to_curation_result(existing.current_version)
+            final_merged = await llm_port.merge(existing_result, merged, KNOWLEDGE_CURATION_SCHEMA)
+            final_input = _curation_result_to_compile_input(
+                final_merged, created_by=payload.created_by, bump=payload.bump, source_curation_run_id=None,
             )
             await compile_use_case.execute(existing.id, final_input)
             product = await repository.get_by_id(existing.id)
@@ -400,17 +414,17 @@ async def batch_compile_from_extractions(
     return KnowledgeProductResponse.from_domain(product)
 
 
-@router.get("/extraction-runs/{run_id}", response_model=ExtractionRunWithProductResponse)
-async def get_extraction_run(
+@router.get("/curation-runs/{run_id}", response_model=CurationRunWithProductResponse)
+async def get_curation_run(
     run_id: uuid.UUID,
     session: SessionDep,
     _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
-) -> ExtractionRunWithProductResponse:
-    repo = SqlAlchemyExtractionRunRepository(session)
+) -> CurationRunWithProductResponse:
+    repo = SqlAlchemyCurationRunRepository(session)
     run = await repo.get_by_id(run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="Extraction run not found")
-    return ExtractionRunWithProductResponse(
+        raise HTTPException(status_code=404, detail="Curation run not found")
+    return CurationRunWithProductResponse(
         id=run.id,
         page_id=run.page_id,
         status=run.status.value if hasattr(run.status, "value") else run.status,
@@ -427,13 +441,21 @@ async def get_extraction_run(
     )
 
 
-@router.post("/extraction-runs/{run_id}/compile", response_model=KnowledgeProductResponse)
-async def compile_from_extraction(
+@router.post("/curation-runs/{run_id}/compile", response_model=KnowledgeProductResponse)
+async def compile_from_curation(
     run_id: uuid.UUID,
-    payload: CompileFromExtractionRequest,
-    use_case: Annotated[CompileFromExtractionUseCase, Depends(get_compile_from_extraction_use_case)],
+    payload: CompileFromCurationRequest,
+    session: SessionDep,
+    use_case: Annotated[CompileFromCurationUseCase, Depends(get_compile_from_curation_use_case)],
     _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
 ) -> KnowledgeProductResponse:
+    from datetime import datetime, timezone
+    from app.infrastructure.db.models import (
+        KpCompileSession as KpCompileSessionModel,
+        KpCompileSessionEntry as KpCompileSessionEntryModel,
+        PageCurationSessionEntry as CurationEntryModel,
+        WebPageModel,
+    )
     try:
         product = await use_case.execute(
             run_id,
@@ -443,8 +465,43 @@ async def compile_from_extraction(
             created_by=payload.created_by,
             bump=payload.bump,
         )
-    except (ExtractionRunNotFound, ExtractionRunNotSucceeded) as exc:
+    except (CurationRunNotFound, CurationRunNotSucceeded) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Create kp_compile_session + entry so the KP dropdown and KP-status endpoints
+    # can find pages compiled via this single-page path (batch compile creates these rows itself).
+    try:
+        curation_entry = await session.get(CurationEntryModel, run_id)
+        page_title: str | None = None
+        if curation_entry and curation_entry.page_id:
+            web_page = await session.get(WebPageModel, curation_entry.page_id)
+            page_title = web_page.title if web_page else None
+
+        now = datetime.now(timezone.utc)
+        compile_session = KpCompileSessionModel(
+            version_id=product.current_version.id,
+            knowledge_product_id=product.id,
+            product_name=product.name,
+            status="succeeded",
+            started_at=now,
+            completed_at=now,
+            created_by=payload.created_by,
+        )
+        session.add(compile_session)
+        await session.flush()
+
+        session.add(KpCompileSessionEntryModel(
+            session_id=compile_session.id,
+            curation_entry_id=run_id,
+            page_id=curation_entry.page_id if curation_entry else None,
+            page_title=page_title,
+            status="compiled",
+            compiled_at=now,
+        ))
+        await session.commit()
+    except Exception:
+        logger.exception("Failed to record kp_compile_session for run %s", run_id)
+
     return KnowledgeProductResponse.from_domain(product)
 
 
@@ -452,13 +509,8 @@ async def compile_from_extraction(
 # SSE streaming compile endpoint
 # ---------------------------------------------------------------------------
 
-class BatchCompileStreamItem(BaseModel):
-    run_id: uuid.UUID
-    page_id: uuid.UUID
-
-
 class BatchCompileStreamRequest(BaseModel):
-    items: list[BatchCompileStreamItem]
+    page_ids: list[uuid.UUID]
     product_key: str
     name: str
     owner: str
@@ -472,11 +524,11 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-@router.post("/extraction-runs/batch-compile-stream")
+@router.post("/curation-runs/batch-compile-stream")
 async def batch_compile_stream(
     payload: BatchCompileStreamRequest,
     session: SessionDep,
-    llm_port: Annotated[LLMExtractionPort, Depends(get_llm_port)],
+    llm_port: Annotated[LLMCurationPort, Depends(get_llm_port)],
     repository: Annotated[SqlAlchemyKnowledgeProductRepository, Depends(get_repository)],
     create_use_case: Annotated[CreateKnowledgeProductUseCase, Depends(get_create_use_case)],
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
@@ -486,17 +538,32 @@ async def batch_compile_stream(
 
     async def generate() -> AsyncGenerator[str, None]:
         from sqlalchemy import select as sa_select
-        from app.infrastructure.db.models import CompileSession, CompileSessionEntry, ConfluencePage
+        from app.infrastructure.db.models import KpCompileSession as CompileSession, KpCompileSessionEntry as CompileSessionEntry, ConfluencePage
         from app.core.config import settings as _settings
 
-        repo = SqlAlchemyExtractionRunRepository(session)
-        total = len(payload.items)
-        logger.info("[compile-stream] starting: product_key=%r items=%d", payload.product_key, total)
+        repo = SqlAlchemyCurationRunRepository(session)
+
+        # Resolve latest succeeded run per page — backend is authoritative
+        resolved_runs = await repo.get_latest_succeeded_by_pages(payload.page_ids)
+
+        # Reject if any page's latest run is not succeeded
+        all_latest = await repo.list_by_pages(payload.page_ids)
+        latest_by_page: dict[uuid.UUID, CurationRun] = {}
+        for r in all_latest:
+            if r.page_id not in latest_by_page:
+                latest_by_page[r.page_id] = r
+        blocked = [pid for pid in payload.page_ids if latest_by_page.get(pid) and latest_by_page[pid].status is not CurationStatus.SUCCEEDED]
+        if blocked:
+            yield _sse({"type": "error", "message": f"Pages have failed or running curations — re-curate before compiling: {', '.join(str(p) for p in blocked)}"})
+            return
+
+        total = len(resolved_runs)
+        logger.info("[compile-stream] starting: product_key=%r pages=%d resolved=%d", payload.product_key, len(payload.page_ids), total)
         yield _sse({"type": "start", "total": total})
 
         # Pre-load page titles for compile session entries
         from app.infrastructure.db.models import WebPage as WebPageModel
-        page_ids = [item.page_id for item in payload.items]
+        page_ids = payload.page_ids
         page_titles: dict[uuid.UUID, str] = {}  # page_id → title
         if page_ids:
             # Confluence pages
@@ -517,24 +584,15 @@ async def batch_compile_stream(
                     page_titles[r.id] = r.title or ""
 
         # Pre-load all drafts from DB before any LLM calls
-        drafts: list[tuple[uuid.UUID, uuid.UUID, ExtractionResult]] = []
-        for item in payload.items:
-            run = await repo.get_by_id(item.run_id)
-            if run is None:
-                logger.warning("[compile-stream] run not found: run_id=%s page_id=%s", item.run_id, item.page_id)
-                yield _sse({"type": "skipped", "run_id": str(item.run_id), "page_id": str(item.page_id), "reason": "run not found"})
-                continue
-            if run.status is not ExtractionStatus.SUCCEEDED:
-                logger.warning("[compile-stream] run not succeeded: run_id=%s status=%s", item.run_id, run.status)
-                yield _sse({"type": "skipped", "run_id": str(item.run_id), "page_id": str(item.page_id), "reason": f"status={run.status}"})
-                continue
+        drafts: list[tuple[uuid.UUID, uuid.UUID, CurationResult]] = []
+        for run in resolved_runs:
             if not run.structured_draft:
-                logger.warning("[compile-stream] run has no draft: run_id=%s", item.run_id)
-                yield _sse({"type": "skipped", "run_id": str(item.run_id), "page_id": str(item.page_id), "reason": "no structured draft"})
+                logger.warning("[compile-stream] run has no draft: run_id=%s page_id=%s", run.id, run.page_id)
+                yield _sse({"type": "skipped", "run_id": str(run.id), "page_id": str(run.page_id), "reason": "no structured draft"})
                 continue
-            logger.debug("[compile-stream] loaded draft: run_id=%s page_id=%s", item.run_id, item.page_id)
+            logger.debug("[compile-stream] loaded draft: run_id=%s page_id=%s", run.id, run.page_id)
             d = run.structured_draft
-            drafts.append((item.run_id, item.page_id, ExtractionResult(
+            drafts.append((run.id, run.page_id, CurationResult(
                 process_overview=d.get("process_overview", {}),
                 process_steps=d.get("process_steps", []),
                 rules=d.get("rules", []),
@@ -550,7 +608,7 @@ async def batch_compile_stream(
 
         if not drafts:
             logger.error("[compile-stream] no eligible drafts — aborting")
-            yield _sse({"type": "error", "message": "No succeeded extraction runs found"})
+            yield _sse({"type": "error", "message": "No succeeded curation runs found"})
             return
 
         # Incremental compile using a SINGLE draft version updated in place.
@@ -566,8 +624,8 @@ async def batch_compile_stream(
             if new_kp:
                 logger.info("[compile-stream] creating new KP: product_key=%r", payload.product_key)
                 # Bootstrap with first page's content; we'll overwrite this immediately
-                first_input = _extraction_result_to_compile_input(
-                    drafts[0][2], created_by=payload.created_by, bump=payload.bump, source_extraction_run_id=None,
+                first_input = _curation_result_to_compile_input(
+                    drafts[0][2], created_by=payload.created_by, bump=payload.bump, source_curation_run_id=None,
                 )
                 product = await create_use_case.execute(
                     CreateKnowledgeProductInput(
@@ -581,7 +639,7 @@ async def batch_compile_stream(
                 bootstrap_run_id, bootstrap_page_id, _ = drafts[0]
                 drafts = drafts[1:]
                 draft_version_id = product.current_version.id
-                current_merged: ExtractionResult = _version_to_extraction_result(product.current_version)
+                current_merged: CurationResult = _version_to_curation_result(product.current_version)
                 draft_semver = str(product.current_version.semver)
                 product_id = str(product.id)
 
@@ -611,7 +669,7 @@ async def batch_compile_stream(
                     # force=True: reset content to last published version (or empty).
                     # Reuse the existing draft row if one exists — no new version row, no orphan.
                     base_version = published[-1] if published else None
-                    base_result = _version_to_extraction_result(base_version) if base_version else drafts[0][2]
+                    base_result = _version_to_curation_result(base_version) if base_version else drafts[0][2]
                     logger.info(
                         "[compile-stream] force=True — resetting draft to base: %s",
                         str(base_version.semver) if base_version else "empty",
@@ -621,8 +679,8 @@ async def batch_compile_stream(
                         from app.application.knowledge_product.use_cases import _compile_args as _build_compile_args
                         from app.domain.knowledge_product.entities import KnowledgeProductVersion as KPVersion
                         from app.domain.knowledge_product.value_objects import SemVer
-                        base_input = _extraction_result_to_compile_input(
-                            base_result, created_by=payload.created_by, bump=payload.bump, source_extraction_run_id=None,
+                        base_input = _curation_result_to_compile_input(
+                            base_result, created_by=payload.created_by, bump=payload.bump, source_curation_run_id=None,
                         )
                         args = _build_compile_args(base_input)
                         tmp = KPVersion(
@@ -653,8 +711,8 @@ async def batch_compile_stream(
                         # No draft exists yet — create one
                         await compile_use_case.execute(
                             existing.id,
-                            _extraction_result_to_compile_input(
-                                base_result, created_by=payload.created_by, bump=payload.bump, source_extraction_run_id=None,
+                            _curation_result_to_compile_input(
+                                base_result, created_by=payload.created_by, bump=payload.bump, source_curation_run_id=None,
                             ),
                         )
                         product = await repository.get_by_id(existing.id)
@@ -664,7 +722,7 @@ async def batch_compile_stream(
                         logger.info("[compile-stream] new draft created: version_id=%s semver=%s", draft_version_id, draft_semver)
                 else:
                     # force=False: resume from current version (may be draft or published)
-                    base_result = _version_to_extraction_result(existing.current_version)
+                    base_result = _version_to_curation_result(existing.current_version)
                     logger.info("[compile-stream] resume — base: %s", existing.current_version.semver)
                     if existing_draft:
                         # Continue merging into the existing draft
@@ -675,8 +733,8 @@ async def batch_compile_stream(
                         # No draft — create one
                         await compile_use_case.execute(
                             existing.id,
-                            _extraction_result_to_compile_input(
-                                base_result, created_by=payload.created_by, bump=payload.bump, source_extraction_run_id=None,
+                            _curation_result_to_compile_input(
+                                base_result, created_by=payload.created_by, bump=payload.bump, source_curation_run_id=None,
                             ),
                         )
                         product = await repository.get_by_id(existing.id)
@@ -744,7 +802,7 @@ async def batch_compile_stream(
             if page_id in already_compiled_page_ids:
                 session.add(CompileSessionEntry(
                     session_id=compile_session_id,
-                    entry_id=run_id,
+                    curation_entry_id=run_id,
                     page_id=page_id,
                     page_title=page_titles.get(page_id, ""),
                     status="discarded",
@@ -759,7 +817,7 @@ async def batch_compile_stream(
             _bs_run, _bs_page = _bootstrap_entry
             session.add(CompileSessionEntry(
                 session_id=compile_session_id,
-                entry_id=_bs_run,
+                curation_entry_id=_bs_run,
                 page_id=_bs_page,
                 page_title=page_titles.get(_bs_page, ""),
                 status="compiled",
@@ -776,61 +834,80 @@ async def batch_compile_stream(
             logger.info("[compile-stream] page %d/%d: merging run_id=%s page_id=%s", page_num, total_pages, run_id, page_id)
             yield _sse({"type": "merging", "run_id": str(run_id), "page_id": str(page_id), "index": page_num, "total": total_pages})
             try:
-                current_merged = await llm_port.merge(current_merged, result, KNOWLEDGE_EXTRACTION_SCHEMA, brief=payload.brief)
-
-                # Build canonical yaml_content via a temporary domain object — same shape as save()
-                compile_input = _extraction_result_to_compile_input(
-                    current_merged, created_by=payload.created_by, bump=VersionBump.MINOR, source_extraction_run_id=None,
-                )
-                args = _build_compile_args(compile_input)
-                tmp_version = KPVersion(
-                    id=draft_version_id,
-                    product_id=uuid.UUID(product_id),
-                    semver=SemVer(*[int(x) for x in draft_semver.split(".")]),
-                    process_steps=args["process_steps"],
-                    rules=args["rules"],
-                    policies=args["policies"],
-                    sla=args["sla"],
-                    escalations=args["escalations"],
-                    roles=args["roles"],
-                    tools=args["tools"],
-                    created_by=payload.created_by,
-                    process_overview=args.get("process_overview", {}),
-                )
-                new_yaml = tmp_version.to_canonical_dict(
-                    product_key=payload.product_key,
-                    name=payload.name,
-                    owner=payload.owner,
-                )
+                current_merged, changed = await llm_port.merge(current_merged, result, KNOWLEDGE_CURATION_SCHEMA, brief=payload.brief)
 
                 now = datetime.now(tz.utc)
-                await repository.update_draft_content(draft_version_id, new_yaml)
-                session.add(CompileSessionEntry(
-                    session_id=compile_session_id,
-                    entry_id=run_id,
-                    page_id=page_id,
-                    page_title=page_titles.get(page_id, ""),
-                    status="compiled",
-                    compiled_at=now,
-                ))
-                await session.commit()
-                logger.info("[compile-stream] page %d/%d merged into draft version_id=%s", page_num, total_pages, draft_version_id)
-                yield _sse({
-                    "type": "page_compiled",
-                    "run_id": str(run_id),
-                    "page_id": str(page_id),
-                    "index": page_num,
-                    "total": total_pages,
-                    "product_id": product_id,
-                    "product_key": payload.product_key,
-                    "semver": draft_semver,
-                })
+                if changed:
+                    # Build canonical yaml_content via a temporary domain object — same shape as save()
+                    compile_input = _curation_result_to_compile_input(
+                        current_merged, created_by=payload.created_by, bump=VersionBump.MINOR, source_curation_run_id=None,
+                    )
+                    args = _build_compile_args(compile_input)
+                    tmp_version = KPVersion(
+                        id=draft_version_id,
+                        product_id=uuid.UUID(product_id),
+                        semver=SemVer(*[int(x) for x in draft_semver.split(".")]),
+                        process_steps=args["process_steps"],
+                        rules=args["rules"],
+                        policies=args["policies"],
+                        sla=args["sla"],
+                        escalations=args["escalations"],
+                        roles=args["roles"],
+                        tools=args["tools"],
+                        created_by=payload.created_by,
+                        process_overview=args.get("process_overview", {}),
+                    )
+                    new_yaml = tmp_version.to_canonical_dict(
+                        product_key=payload.product_key,
+                        name=payload.name,
+                        owner=payload.owner,
+                    )
+                    await repository.update_draft_content(draft_version_id, new_yaml)
+                    session.add(CompileSessionEntry(
+                        session_id=compile_session_id,
+                        curation_entry_id=run_id,
+                        page_id=page_id,
+                        page_title=page_titles.get(page_id, ""),
+                        status="compiled",
+                        compiled_at=now,
+                    ))
+                    await session.commit()
+                    logger.info("[compile-stream] page %d/%d merged into draft version_id=%s", page_num, total_pages, draft_version_id)
+                    yield _sse({
+                        "type": "page_compiled",
+                        "run_id": str(run_id),
+                        "page_id": str(page_id),
+                        "index": page_num,
+                        "total": total_pages,
+                        "product_id": product_id,
+                        "product_key": payload.product_key,
+                        "semver": draft_semver,
+                    })
+                else:
+                    session.add(CompileSessionEntry(
+                        session_id=compile_session_id,
+                        curation_entry_id=run_id,
+                        page_id=page_id,
+                        page_title=page_titles.get(page_id, ""),
+                        status="not_relevant",
+                        reason="LLM brief filter: page not relevant to this Knowledge Product",
+                        compiled_at=None,
+                    ))
+                    await session.commit()
+                    logger.info("[compile-stream] page %d/%d not relevant run_id=%s", page_num, run_id, run_id)
+                    yield _sse({
+                        "type": "page_not_relevant",
+                        "run_id": str(run_id),
+                        "page_id": str(page_id),
+                        "index": page_num,
+                        "total": total_pages,
+                    })
             except Exception as exc:
                 logger.exception("[compile-stream] page %d FAILED run_id=%s: %s", page_num, run_id, exc)
                 try:
                     session.add(CompileSessionEntry(
                         session_id=compile_session_id,
-                        entry_id=run_id,
+                        curation_entry_id=run_id,
                         page_id=page_id,
                         page_title=page_titles.get(page_id, ""),
                         status="skipped",

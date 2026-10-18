@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from app.domain.extraction.ports import ExtractionSchema
+from app.domain.curation.ports import ExtractionSchema
 
-KNOWLEDGE_EXTRACTION_SCHEMA = ExtractionSchema(
+KNOWLEDGE_CURATION_SCHEMA = ExtractionSchema(
     json_schema={
         "type": "object",
         "properties": {

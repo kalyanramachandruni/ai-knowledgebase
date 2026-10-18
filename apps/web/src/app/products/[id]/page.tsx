@@ -212,6 +212,11 @@ export default function ProductDetailPage() {
           <div className="flex items-center gap-2">
             <StatusBadge status={v.status} />
             <span className="text-sm text-gray-500">v{v.semver}</span>
+            {v.compiled_at && (
+              <span className="text-xs text-gray-400" title={new Date(v.compiled_at).toLocaleString()}>
+                compiled {new Date(v.compiled_at).toLocaleString()}
+              </span>
+            )}
           </div>
         </div>
 
@@ -270,6 +275,25 @@ export default function ProductDetailPage() {
 }
 
 // ── view mode ─────────────────────────────────────────────────────────────────
+
+function MarkdownText({ text, className }: { text: string; className?: string }) {
+  const parts = text.split(/(\[([^\]]+)\]\(([^)]+)\))/g);
+  const nodes: React.ReactNode[] = [];
+  let i = 0;
+  while (i < parts.length) {
+    const chunk = parts[i];
+    if (/^\[([^\]]+)\]\(([^)]+)\)$/.test(chunk)) {
+      const label = parts[i + 1];
+      const href = parts[i + 2];
+      nodes.push(<a key={i} href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline hover:text-blue-800">{label}</a>);
+      i += 3;
+    } else {
+      if (chunk) nodes.push(chunk);
+      i += 1;
+    }
+  }
+  return <span className={className}>{nodes}</span>;
+}
 
 function SourceLinks({ sources }: { sources?: string[] | null }) {
   if (!sources || sources.length === 0) return null;
@@ -675,7 +699,7 @@ function RuleList({ items, showSources }: { items: { condition: string; action: 
     <ul className="space-y-2 text-sm text-gray-700">
       {items.map((item, i) => (
         <li key={i}>
-          IF <code className="rounded bg-gray-100 px-1">{item.condition}</code> THEN {item.action}
+          IF <code className="rounded bg-gray-100 px-1">{item.condition}</code> THEN <MarkdownText text={item.action} />
           {showSources && <SourceLinks sources={item.sources} />}
         </li>
       ))}
@@ -703,7 +727,7 @@ function StepList({ steps, showSources }: { steps: StepItem2[]; showSources?: bo
             <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-medium text-blue-700">{i + 1}</span>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-gray-900">{step.name}</p>
-              {step.description && <p className="mt-0.5 text-sm text-gray-600">{step.description}</p>}
+              {step.description && <p className="mt-0.5 text-sm text-gray-600"><MarkdownText text={step.description} /></p>}
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-gray-500">
                 {step.responsible_role && <span>👤 {step.responsible_role}</span>}
                 {step.tools_used && step.tools_used.length > 0 && <span>🔧 {step.tools_used.join(", ")}</span>}

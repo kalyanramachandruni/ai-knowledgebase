@@ -40,6 +40,7 @@ export interface KnowledgeProductVersion {
   semver: string;
   status: KnowledgeProductStatus;
   content: CanonicalContent;
+  compiled_at: string | null;
 }
 
 export interface KnowledgeProduct {
@@ -84,11 +85,15 @@ export interface WebSource {
   id: string;
   name: string;
   root_url: string;
+  crawl_depth: number | null;
+  include_query_strings: boolean;
   last_crawled_at: string | null;
   page_count: number;
   last_crawl_created: number | null;
   last_crawl_updated: number | null;
   last_crawl_skipped: number | null;
+  crawl_status: "PENDING" | "SUCCESSFUL" | "FAILED" | null;
+  successful_crawl_count: number;
 }
 
 export interface WebPage {
@@ -104,6 +109,22 @@ export interface WebPage {
   page_tags: string[];
   is_compiled: boolean;
   compiled_at: string | null;
+  latest_compile_status: string | null;
+  changed_since_extraction: boolean;
+  is_thin_content: boolean;
+  compiled_kp_count: number;
+}
+
+export interface CompiledKpSummary {
+  product_id: string;
+  product_key: string;
+  product_name: string;
+  compiled_page_count: number;
+}
+
+export interface PageKpStatus {
+  page_id: string;
+  status: "compiled" | "not_relevant" | "none";
 }
 
 export interface WebPageLink {
@@ -115,6 +136,26 @@ export interface WebPageLink {
   linked_page_run_id: string | null;
   linked_page_is_compiled: boolean;
   linked_page_compiled_at: string | null;
+}
+
+export interface LinkTreeNode {
+  page_id: string | null;
+  url: string;
+  title: string | null;
+  depth: number;
+  run_status: "running" | "succeeded" | "failed" | null;
+  is_compiled: boolean;
+  children: LinkTreeNode[];
+}
+
+export interface LinkTreeResponse {
+  page_id: string;
+  url: string;
+  title: string;
+  run_status: "running" | "succeeded" | "failed" | null;
+  is_compiled: boolean;
+  parents: LinkTreeNode[];
+  children: LinkTreeNode[];
 }
 
 export interface ApprovalRequest {
@@ -161,7 +202,7 @@ export interface CompiledProductSummary {
   semver: string;
 }
 
-export interface ExtractionRun {
+export interface CurationRun {
   id: string;
   page_id: string;
   status: "running" | "succeeded" | "failed";

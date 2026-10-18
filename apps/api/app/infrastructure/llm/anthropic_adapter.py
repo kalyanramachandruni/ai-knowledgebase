@@ -2,33 +2,34 @@ from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 
-from app.domain.extraction.ports import ExtractionResult, ExtractionSchema
+from app.domain.curation.ports import CurationResult, ExtractionSchema
 import json
-from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME
+from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME, _BRIEF_INSTRUCTION, _NO_BRIEF_INSTRUCTION, merge_schema
 
 
 class AnthropicExtractionAdapter:
-    """Implements app.domain.extraction.ports.LLMExtractionPort using Claude's
+    """Implements app.domain.curation.ports.LLMCurationPort using Claude's
     tool-use feature to force structured output matching ExtractionSchema."""
 
     def __init__(self, api_key: str, model: str, *, client: AsyncAnthropic | None = None) -> None:
         self._model = model
         self._client = client or AsyncAnthropic(api_key=api_key)
 
-    async def extract(self, raw_text: str, schema: ExtractionSchema) -> ExtractionResult:
+    async def extract(self, raw_text: str, schema: ExtractionSchema, *, source_url: str | None = None) -> CurationResult:
+        content = f"SOURCE_URL: {source_url}\n\n{raw_text}" if source_url else raw_text
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=4096,
             system=EXTRACTION_SYSTEM_PROMPT,
             tools=[{"name": TOOL_NAME, "description": TOOL_DESCRIPTION, "input_schema": schema.json_schema}],
             tool_choice={"type": "tool", "name": TOOL_NAME},
-            messages=[{"role": "user", "content": raw_text}],
+            messages=[{"role": "user", "content": content}],
         )
 
         tool_use_block = next(block for block in response.content if block.type == "tool_use")
         data = tool_use_block.input
 
-        return ExtractionResult(
+        return CurationResult(
             process_overview=data.get("process_overview", {}),
             process_steps=data.get("process_steps", []),
             rules=data.get("rules", []),
@@ -40,7 +41,7 @@ class AnthropicExtractionAdapter:
             raw_model_output=data,
         )
 
-    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema) -> ExtractionResult:
+    async def merge(self, existing: CurationResult, incoming: CurationResult, schema: ExtractionSchema, *, brief: str | None = None) -> tuple[CurationResult, bool]:
         user_content = (
             "EXISTING KNOWLEDGE PRODUCT:\n"
             + json.dumps({
@@ -52,7 +53,7 @@ class AnthropicExtractionAdapter:
                 "roles": existing.roles,
                 "tools": existing.tools,
             }, indent=2)
-            + "\n\nNEW EXTRACTION FROM ADDITIONAL PAGE:\n"
+            + "\n\nNEW CURATION FROM ADDITIONAL PAGE:\n"
             + json.dumps({
                 "process_steps": incoming.process_steps,
                 "rules": incoming.rules,
@@ -63,24 +64,29 @@ class AnthropicExtractionAdapter:
                 "tools": incoming.tools,
             }, indent=2)
         )
+        brief_instruction = _BRIEF_INSTRUCTION.format(brief=brief) if brief else _NO_BRIEF_INSTRUCTION
+        merge_prompt = MERGE_SYSTEM_PROMPT.format(brief_instruction=brief_instruction)
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=4096,
-            system=MERGE_SYSTEM_PROMPT,
-            tools=[{"name": TOOL_NAME, "description": MERGE_TOOL_DESCRIPTION, "input_schema": schema.json_schema}],
+            system=merge_prompt,
+            tools=[{"name": TOOL_NAME, "description": MERGE_TOOL_DESCRIPTION, "input_schema": merge_schema(schema.json_schema)}],
             tool_choice={"type": "tool", "name": TOOL_NAME},
             messages=[{"role": "user", "content": user_content}],
         )
         tool_use_block = next(block for block in response.content if block.type == "tool_use")
         data = tool_use_block.input
-        return ExtractionResult(
-            process_overview=data.get("process_overview", {}),
-            process_steps=data.get("process_steps", []),
-            rules=data.get("rules", []),
-            policies=data.get("policies", []),
-            sla_target=data.get("sla_target"),
-            escalations=data.get("escalations", []),
-            roles=data.get("roles", []),
-            tools=data.get("tools", []),
-            raw_model_output=data,
+        return (
+            CurationResult(
+                process_overview=data.get("process_overview", {}),
+                process_steps=data.get("process_steps", []),
+                rules=data.get("rules", []),
+                policies=data.get("policies", []),
+                sla_target=data.get("sla_target"),
+                escalations=data.get("escalations", []),
+                roles=data.get("roles", []),
+                tools=data.get("tools", []),
+                raw_model_output=data,
+            ),
+            bool(data.get("relevant", True)),
         )

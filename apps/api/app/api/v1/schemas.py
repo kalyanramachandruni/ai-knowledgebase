@@ -81,6 +81,7 @@ class KnowledgeProductVersionResponse(BaseModel):
     semver: str
     status: str
     content: dict
+    compiled_at: str | None = None
 
     @classmethod
     def from_domain(cls, version: KnowledgeProductVersion, *, product_key: str, name: str, owner: str) -> "KnowledgeProductVersionResponse":
@@ -89,6 +90,7 @@ class KnowledgeProductVersionResponse(BaseModel):
             semver=str(version.semver),
             status=version.status.value,
             content=version.to_canonical_dict(product_key=product_key, name=name, owner=owner),
+            compiled_at=version.compiled_at.isoformat() if version.compiled_at else None,
         )
 
 

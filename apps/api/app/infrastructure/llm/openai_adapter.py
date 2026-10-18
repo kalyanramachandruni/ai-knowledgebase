@@ -4,12 +4,12 @@ import json
 
 from openai import AsyncOpenAI
 
-from app.domain.extraction.ports import ExtractionResult, ExtractionSchema
-from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME
+from app.domain.curation.ports import CurationResult, ExtractionSchema
+from app.infrastructure.llm.prompts import EXTRACTION_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT, MERGE_TOOL_DESCRIPTION, TOOL_DESCRIPTION, TOOL_NAME, _BRIEF_INSTRUCTION, _NO_BRIEF_INSTRUCTION, merge_schema
 
 
 class OpenAIExtractionAdapter:
-    """Implements app.domain.extraction.ports.LLMExtractionPort using OpenAI
+    """Implements app.domain.curation.ports.LLMCurationPort using OpenAI
     function calling to force structured output matching ExtractionSchema.
     Same port as AnthropicExtractionAdapter — swapping providers is a config
     change (LLM_PROVIDER env var), not a code change anywhere else."""
@@ -18,12 +18,13 @@ class OpenAIExtractionAdapter:
         self._model = model
         self._client = client or AsyncOpenAI(api_key=api_key)
 
-    async def extract(self, raw_text: str, schema: ExtractionSchema) -> ExtractionResult:
+    async def extract(self, raw_text: str, schema: ExtractionSchema, *, source_url: str | None = None) -> CurationResult:
+        content = f"SOURCE_URL: {source_url}\n\n{raw_text}" if source_url else raw_text
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": raw_text},
+                {"role": "user", "content": content},
             ],
             tools=[
                 {
@@ -41,7 +42,7 @@ class OpenAIExtractionAdapter:
         tool_call = response.choices[0].message.tool_calls[0]
         data = json.loads(tool_call.function.arguments)
 
-        return ExtractionResult(
+        return CurationResult(
             process_overview=data.get("process_overview", {}),
             process_steps=data.get("process_steps", []),
             rules=data.get("rules", []),
@@ -53,7 +54,7 @@ class OpenAIExtractionAdapter:
             raw_model_output=data,
         )
 
-    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema) -> ExtractionResult:
+    async def merge(self, existing: CurationResult, incoming: CurationResult, schema: ExtractionSchema, *, brief: str | None = None) -> tuple[CurationResult, bool]:
         user_content = (
             "EXISTING KNOWLEDGE PRODUCT:\n"
             + json.dumps({
@@ -65,7 +66,7 @@ class OpenAIExtractionAdapter:
                 "roles": existing.roles,
                 "tools": existing.tools,
             }, indent=2)
-            + "\n\nNEW EXTRACTION FROM ADDITIONAL PAGE:\n"
+            + "\n\nNEW CURATION FROM ADDITIONAL PAGE:\n"
             + json.dumps({
                 "process_steps": incoming.process_steps,
                 "rules": incoming.rules,
@@ -76,10 +77,12 @@ class OpenAIExtractionAdapter:
                 "tools": incoming.tools,
             }, indent=2)
         )
+        brief_instruction = _BRIEF_INSTRUCTION.format(brief=brief) if brief else _NO_BRIEF_INSTRUCTION
+        merge_prompt = MERGE_SYSTEM_PROMPT.format(brief_instruction=brief_instruction)
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": MERGE_SYSTEM_PROMPT},
+                {"role": "system", "content": merge_prompt},
                 {"role": "user", "content": user_content},
             ],
             tools=[{
@@ -87,21 +90,24 @@ class OpenAIExtractionAdapter:
                 "function": {
                     "name": TOOL_NAME,
                     "description": MERGE_TOOL_DESCRIPTION,
-                    "parameters": schema.json_schema,
+                    "parameters": merge_schema(schema.json_schema),
                 },
             }],
             tool_choice={"type": "function", "function": {"name": TOOL_NAME}},
         )
         tool_call = response.choices[0].message.tool_calls[0]
         data = json.loads(tool_call.function.arguments)
-        return ExtractionResult(
-            process_overview=data.get("process_overview", {}),
-            process_steps=data.get("process_steps", []),
-            rules=data.get("rules", []),
-            policies=data.get("policies", []),
-            sla_target=data.get("sla_target"),
-            escalations=data.get("escalations", []),
-            roles=data.get("roles", []),
-            tools=data.get("tools", []),
-            raw_model_output=data,
+        return (
+            CurationResult(
+                process_overview=data.get("process_overview", {}),
+                process_steps=data.get("process_steps", []),
+                rules=data.get("rules", []),
+                policies=data.get("policies", []),
+                sla_target=data.get("sla_target"),
+                escalations=data.get("escalations", []),
+                roles=data.get("roles", []),
+                tools=data.get("tools", []),
+                raw_model_output=data,
+            ),
+            bool(data.get("relevant", True)),
         )

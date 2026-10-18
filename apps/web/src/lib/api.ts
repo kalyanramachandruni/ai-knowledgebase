@@ -171,12 +171,12 @@ export const api = {
   listConfluenceSpaces: () =>
     request<import("@/lib/types").ConfluenceSpace[]>("/confluence/spaces"),
 
-  getPageExtractionHistory: (pageId: string) =>
-    request<import("@/lib/types").ExtractionRun[]>(`/confluence/pages/${pageId}/extraction-history`),
+  getPageCurationHistory: (pageId: string) =>
+    request<import("@/lib/types").CurationRun[]>(`/confluence/pages/${pageId}/curation-history`),
 
-  getBulkExtractionHistory: (spaceKey?: string) => {
+  getBulkCurationHistory: (spaceKey?: string) => {
     const qs = spaceKey ? `?space_key=${encodeURIComponent(spaceKey)}` : "";
-    return request<Record<string, import("@/lib/types").ExtractionRun[]>>(`/confluence/extraction-history${qs}`);
+    return request<Record<string, import("@/lib/types").CurationRun[]>>(`/confluence/curation-history${qs}`);
   },
 
   getPendingCompileRuns: (spaceKey: string) =>
@@ -192,23 +192,23 @@ export const api = {
   getConfluencePage: (pageId: string) =>
     request<import("@/lib/types").ConfluencePageDetail>(`/confluence/pages/${pageId}`),
 
-  extractPage: (pageId: string) =>
-    request<import("@/lib/types").ExtractionRun>(`/confluence/pages/${pageId}/extract`, {
+  curatePage: (pageId: string) =>
+    request<import("@/lib/types").CurationRun>(`/confluence/pages/${pageId}/curate`, {
       method: "POST",
     }),
 
-  smartExtractPage: (pageId: string) =>
-    request<import("@/lib/types").ExtractionRun>(`/confluence/pages/${pageId}/smart-extract`, {
+  smartCuratePage: (pageId: string) =>
+    request<import("@/lib/types").CurationRun>(`/confluence/pages/${pageId}/smart-curate`, {
       method: "POST",
     }),
 
-  compileExtraction: (runId: string, payload: {
+  compileCuration: (runId: string, payload: {
     product_key: string;
     name: string;
     owner: string;
     created_by: string;
   }) =>
-    request<import("@/lib/types").KnowledgeProduct>(`/extraction-runs/${runId}/compile`, {
+    request<import("@/lib/types").KnowledgeProduct>(`/curation-runs/${runId}/compile`, {
       method: "POST",
       body: JSON.stringify({ ...payload, bump: "minor" }),
     }),
@@ -233,13 +233,13 @@ export const api = {
   },
 
   batchCompile: (payload: {
-    run_ids: string[];
+    page_ids: string[];
     product_key: string;
     name: string;
     owner: string;
     created_by: string;
   }) =>
-    request<import("@/lib/types").KnowledgeProduct>("/extraction-runs/batch-compile", {
+    request<import("@/lib/types").KnowledgeProduct>("/curation-runs/batch-compile", {
       method: "POST",
       body: JSON.stringify({ ...payload, bump: "minor" }),
     }),
@@ -247,10 +247,10 @@ export const api = {
   // Web sources
   listWebSources: () => request<WebSource[]>("/web-sources"),
 
-  createWebSource: (name: string, root_url: string) =>
+  createWebSource: (name: string, root_url: string, crawl_depth: number | null, include_query_strings: boolean) =>
     request<WebSource>("/web-sources", {
       method: "POST",
-      body: JSON.stringify({ name, root_url }),
+      body: JSON.stringify({ name, root_url, crawl_depth, include_query_strings }),
     }),
 
   deleteWebSource: (id: string) =>
@@ -259,15 +259,35 @@ export const api = {
   listWebPages: (sourceId: string) =>
     request<WebPage[]>(`/web-sources/${sourceId}/pages`),
 
-  extractWebPage: (sourceId: string, pageId: string) =>
+  curateWebPage: (sourceId: string, pageId: string) =>
     request<{ run_id: string; status: string; error_message: string | null }>(
-      `/web-sources/${sourceId}/pages/${pageId}/extract`,
+      `/web-sources/${sourceId}/pages/${pageId}/curate`,
       { method: "POST" }
     ),
 
   listWebPageLinks: (sourceId: string, pageId: string) =>
     request<import("@/lib/types").WebPageLink[]>(`/web-sources/${sourceId}/pages/${pageId}/links`),
 
-  getExtractionRun: (runId: string) =>
-    request<import("@/lib/types").ExtractionRun>(`/extraction-runs/${runId}`),
+  getWebPageLinkTree: (sourceId: string, pageId: string) =>
+    request<import("@/lib/types").LinkTreeResponse>(`/web-sources/${sourceId}/pages/${pageId}/links/tree`),
+
+  getCurationRun: (runId: string) =>
+    request<import("@/lib/types").CurationRun>(`/curation-runs/${runId}`),
+
+  batchQueueCuration: (sourceId: string, pageIds: string[]) =>
+    request<{ queued: number; skipped_duplicates: number; session_id: string }>(
+      `/web-sources/${sourceId}/pages/batch-queue-curation`,
+      {
+        method: "POST",
+        body: JSON.stringify({ page_ids: pageIds }),
+      }
+    ),
+
+  getCompiledKps: (sourceId: string) =>
+    request<import("@/lib/types").CompiledKpSummary[]>(`/web-sources/${sourceId}/compiled-kps`),
+
+  getKpPageStatus: (sourceId: string, productId: string) =>
+    request<import("@/lib/types").PageKpStatus[]>(
+      `/web-sources/${sourceId}/pages/kp-status?product_id=${productId}`
+    ),
 };

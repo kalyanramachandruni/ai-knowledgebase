@@ -3,14 +3,14 @@ from __future__ import annotations
 import logging
 
 from app.core.config import settings
-from app.domain.extraction.ports import LLMExtractionPort
+from app.domain.curation.ports import LLMCurationPort
 
 logger = logging.getLogger(__name__)
 
 
-def get_llm_extraction_port() -> LLMExtractionPort:
+def get_llm_curation_port() -> LLMCurationPort:
     """Single switch point for the LLM provider abstraction (docs/architecture.md §5).
-    Everything upstream of this depends only on LLMExtractionPort."""
+    Everything upstream of this depends only on LLMCurationPort."""
 
     logger.info("LLM factory: provider=%r anthropic_key_set=%s openai_key_set=%s",
                 settings.llm_provider, bool(settings.anthropic_api_key), bool(settings.openai_api_key))

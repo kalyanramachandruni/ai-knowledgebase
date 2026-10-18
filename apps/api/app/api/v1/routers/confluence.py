@@ -10,12 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ConfluencePageRepositoryDep, ConfluenceSpaceRepositoryDep, EventOutboxDep, SessionDep, build_confluence_client
-from app.infrastructure.db.extraction_repository import SqlAlchemyExtractionRunRepository
+from app.infrastructure.db.curation_repository import SqlAlchemyCurationRunRepository
 from app.infrastructure.db.models import ConfluencePage as ConfluencePageModel, ConfluenceSpace as ConfluenceSpaceModel
 from app.api.v1.confluence_schemas import ConfluencePageDetailResponse, ConfluencePageResponse, ConfluenceSpaceResponse, SyncSpaceRequest, SyncSpaceResponse
 from app.application.confluence.dto import SyncSpaceInput
 from app.application.confluence.use_cases import SyncConfluenceSpaceUseCase
-from app.application.extraction.html import strip_storage_format
+from app.application.curation.html import strip_storage_format
 from app.core.security import CurrentUser, require_roles
 from app.domain.governance.value_objects import Role
 
@@ -80,7 +80,7 @@ async def get_pending_compile_runs(
         .where(ConfluenceSpaceModel.space_key == space_key)
     )
     page_ids = list((await session.execute(page_id_stmt)).scalars().all())
-    repo = SqlAlchemyExtractionRunRepository(session)
+    repo = SqlAlchemyCurationRunRepository(session)
     pending = await repo.list_pending_compile(page_ids)
     return [{"page_id": str(r.page_id), "run_id": str(r.id)} for r in pending]
 

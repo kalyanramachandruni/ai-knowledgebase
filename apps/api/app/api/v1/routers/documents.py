@@ -11,19 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     SessionDep,
-    get_compile_from_extraction_use_case,
     get_create_use_case,
     get_compile_use_case,
     get_llm_port,
     get_repository,
 )
-from app.application.extraction.compiler import CompileFromExtractionUseCase, _extraction_result_to_compile_input
+from app.application.curation.compiler import CompileFromCurationUseCase, _curation_result_to_compile_input
 from app.application.knowledge_product.dto import CreateKnowledgeProductInput
 from app.application.knowledge_product.use_cases import CreateKnowledgeProductUseCase, CompileNewVersionUseCase
 from app.core.config import settings
 from app.core.security import CurrentUser, get_current_user
-from app.domain.extraction.ports import LLMExtractionPort
-from app.domain.extraction.schema import KNOWLEDGE_EXTRACTION_SCHEMA
+from app.domain.curation.ports import LLMCurationPort
+from app.domain.curation.schema import KNOWLEDGE_CURATION_SCHEMA
 from app.domain.knowledge_product.value_objects import VersionBump
 from app.infrastructure.db.models import Document
 from app.infrastructure.db.repository import SqlAlchemyKnowledgeProductRepository
@@ -197,19 +196,19 @@ async def compile_document_to_knowledge_product(
     payload: CompileDocumentRequest,
     session: SessionDep,
     current_user: Annotated[CurrentUser, Depends(get_current_user)],
-    llm_port: Annotated[LLMExtractionPort, Depends(get_llm_port)],
+    llm_port: Annotated[LLMCurationPort, Depends(get_llm_port)],
     repository: Annotated[SqlAlchemyKnowledgeProductRepository, Depends(get_repository)],
     create_use_case: Annotated[CreateKnowledgeProductUseCase, Depends(get_create_use_case)],
     compile_use_case: Annotated[CompileNewVersionUseCase, Depends(get_compile_use_case)],
 ) -> dict:
     plain_text = await _collect_doc_text(session, doc_id, payload.include_subpages)
 
-    result = await llm_port.extract(plain_text, KNOWLEDGE_EXTRACTION_SCHEMA)
+    result = await llm_port.extract(plain_text, KNOWLEDGE_CURATION_SCHEMA)
 
     bump = VersionBump(payload.bump)
     created_by = current_user.user_id if isinstance(current_user.user_id, uuid.UUID) else uuid.UUID(current_user.user_id)
 
-    compile_input = _extraction_result_to_compile_input(
+    compile_input = _curation_result_to_compile_input(
         result, created_by=created_by, bump=bump, source_extraction_run_id=None
     )
 
@@ -224,10 +223,10 @@ async def compile_document_to_knowledge_product(
             )
         )
     else:
-        from app.application.extraction.compiler import _version_to_extraction_result
-        existing_result = _version_to_extraction_result(existing.current_version)
-        merged = await llm_port.merge(existing_result, result, KNOWLEDGE_EXTRACTION_SCHEMA)
-        merged_input = _extraction_result_to_compile_input(
+        from app.application.curation.compiler import _version_to_curation_result
+        existing_result = _version_to_curation_result(existing.current_version)
+        merged = await llm_port.merge(existing_result, result, KNOWLEDGE_CURATION_SCHEMA)
+        merged_input = _curation_result_to_compile_input(
             merged, created_by=created_by, bump=bump, source_extraction_run_id=None
         )
         await compile_use_case.execute(existing.id, merged_input)

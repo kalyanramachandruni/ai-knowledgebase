@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
 import { api, ApiError } from "@/lib/api";
 import { getToken, getUser, redirectIfUnauthorized } from "@/lib/auth";
-import type { ConfluencePage, ConfluencePageDetail, ConfluenceSpace, ExtractionRun, CompiledProductSummary, WebPageLink } from "@/lib/types";
+import type { ConfluencePage, ConfluencePageDetail, ConfluenceSpace, CurationRun, CompiledProductSummary, WebPageLink, LinkTreeNode, LinkTreeResponse } from "@/lib/types";
 
 interface SyncResult {
   space_key: string;
@@ -15,7 +15,131 @@ interface SyncResult {
 }
 
 type Tab = "connect" | "pages" | "web";
-type PageStatus = "idle" | "extracting" | "extracted" | "reused" | "compiling" | "compiled" | "failed" | "discarded";
+type PageStatus = "idle" | "curating" | "curated" | "reused" | "compiling" | "compiled" | "failed" | "discarded";
+
+function StatusBadge({ status, isCompiled }: { status: LinkTreeNode["run_status"]; isCompiled: boolean }) {
+  return (
+    <span className="flex items-center gap-1">
+      {isCompiled && (
+        <span className="inline-flex items-center rounded-full bg-indigo-100 px-1.5 py-0.5 text-indigo-700 text-[10px] font-medium">Compiled</span>
+      )}
+      {status === "succeeded" && !isCompiled && (
+        <span className="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-green-700 text-[10px] font-medium">Curated</span>
+      )}
+      {status === "failed" && (
+        <span className="inline-flex items-center rounded-full bg-red-100 px-1.5 py-0.5 text-red-700 text-[10px] font-medium">Failed</span>
+      )}
+      {status === "running" && (
+        <span className="inline-flex items-center gap-0.5 rounded-full bg-yellow-100 px-1.5 py-0.5 text-yellow-700 text-[10px] font-medium">
+          <span className="h-1.5 w-1.5 rounded-full bg-yellow-400 animate-pulse inline-block" />Curating
+        </span>
+      )}
+    </span>
+  );
+}
+
+function TreeNode({ node, sourceId, childrenOf }: { node: LinkTreeNode; sourceId: string; childrenOf: "children" | "parents" }) {
+  const [expanded, setExpanded] = useState(false);
+  const [lazyChildren, setLazyChildren] = useState<LinkTreeNode[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const indent = (node.depth - 1) * 16;
+
+  async function handleExpand() {
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    if (lazyChildren !== null || !node.page_id) return;
+    setLoading(true);
+    try {
+      const data = await api.getWebPageLinkTree(sourceId, node.page_id);
+      const next = childrenOf === "children" ? data.children : data.parents;
+      setLazyChildren(next.map(c => ({ ...c, depth: node.depth + 1 })));
+    } catch {
+      setLazyChildren([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const displayChildren = lazyChildren ?? [];
+  const canExpand = !!node.page_id;
+
+  return (
+    <div>
+      <div
+        className="flex items-start gap-1 py-1 hover:bg-gray-50 rounded px-1 cursor-default"
+        style={{ paddingLeft: `${indent + 4}px` }}
+      >
+        {canExpand ? (
+          <button
+            className="mt-0.5 text-gray-400 hover:text-gray-600 text-xs w-3 shrink-0"
+            onClick={handleExpand}
+          >
+            {loading ? "·" : expanded ? "▾" : "▸"}
+          </button>
+        ) : (
+          <span className="w-3 shrink-0 text-gray-200 text-xs">–</span>
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            {node.page_id ? (
+              <span className="text-gray-800 truncate max-w-xs text-xs font-medium">{node.title ?? node.url}</span>
+            ) : (
+              <span className="text-gray-400 italic text-xs truncate max-w-xs">{node.url}</span>
+            )}
+            {!node.page_id && (
+              <span className="text-gray-300 text-[10px]">Not crawled</span>
+            )}
+            <StatusBadge status={node.run_status} isCompiled={node.is_compiled} />
+          </div>
+          {node.title && node.title !== node.url && (
+            <span className="text-gray-400 text-[10px] truncate block max-w-sm">{node.url}</span>
+          )}
+        </div>
+      </div>
+      {expanded && displayChildren.length > 0 && (
+        <div>
+          {displayChildren.map((child) => (
+            <TreeNode key={child.page_id ?? child.url} node={child} sourceId={sourceId} childrenOf={childrenOf} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LinkTreeSection({ data, sourceId }: { data: LinkTreeResponse; sourceId: string }) {
+  const hasParents = data.parents.length > 0;
+  const hasChildren = data.children.length > 0;
+
+  if (!hasParents && !hasChildren) {
+    return <p className="text-gray-400 italic text-xs">No links found for this page.</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {hasParents && (
+        <div>
+          <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Referenced by</p>
+          <div className="border border-gray-100 rounded-lg bg-gray-50/50 py-1">
+            {data.parents.map((node) => (
+              <TreeNode key={node.page_id ?? node.url} node={node} sourceId={sourceId} childrenOf="parents" />
+            ))}
+          </div>
+        </div>
+      )}
+      {hasChildren && (
+        <div>
+          <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Links to</p>
+          <div className="border border-gray-100 rounded-lg bg-gray-50/50 py-1">
+            {data.children.map((node) => (
+              <TreeNode key={node.page_id ?? node.url} node={node} sourceId={sourceId} childrenOf="children" />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SourcesPage() {
   const router = useRouter();
@@ -33,7 +157,7 @@ export default function SourcesPage() {
       <main className="mx-auto max-w-7xl px-6 py-8">
         <h1 className="text-xl font-semibold text-gray-900">Sources</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Connect Confluence spaces and extract Knowledge Products from ingested pages.
+          Connect Confluence spaces and curate Knowledge Products from ingested pages.
         </p>
 
         <div className="mt-6 flex border-b border-gray-200">
@@ -233,12 +357,12 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pageDetails, setPageDetails] = useState<Record<string, ConfluencePageDetail | null>>({});
   const [loadingDetail, setLoadingDetail] = useState<Record<string, boolean>>({});
-  const [runs, setRuns] = useState<Record<string, ExtractionRun>>({});
+  const [runs, setRuns] = useState<Record<string, CurationRun>>({});
   const [search, setSearch] = useState("");
   const [pageStatus, setPageStatus] = useState<Record<string, PageStatus>>({});
 
   // Space-level action state
-  const [extracting, setExtracting] = useState(false);
+  const [curating, setCurating] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [compileProductKey, setCompileProductKey] = useState("");
   const [compileProductName, setCompileProductName] = useState("");
@@ -267,9 +391,9 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     api.listConfluencePages(selectedSpace || undefined)
       .then(async (fetchedPages) => {
         setPages(fetchedPages);
-        const historyMap = await api.getBulkExtractionHistory(selectedSpace || undefined)
-          .catch(() => ({} as Record<string, ExtractionRun[]>));
-        const newRuns: Record<string, ExtractionRun> = {};
+        const historyMap = await api.getBulkCurationHistory(selectedSpace || undefined)
+          .catch(() => ({} as Record<string, CurationRun[]>));
+        const newRuns: Record<string, CurationRun> = {};
         fetchedPages.forEach((p) => {
           const pageRuns = historyMap[p.id] ?? [];
           if (pageRuns.length > 0) newRuns[p.id] = pageRuns[0];
@@ -297,27 +421,27 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     }
   }
 
-  async function handleExtractAll() {
+  async function handleCurateAll() {
     if (!pages) return;
-    setExtracting(true);
+    setCurating(true);
     setError(null);
     setCompileResult(null);
     const toProcess = filtered; // respect current search filter
     for (const page of toProcess) {
-      setPageStatus((s) => ({ ...s, [page.id]: "extracting" }));
+      setPageStatus((s) => ({ ...s, [page.id]: "curating" }));
       try {
-        const run = await api.smartExtractPage(page.id);
+        const run = await api.smartCuratePage(page.id);
         setRuns((r) => ({ ...r, [page.id]: run }));
         if (run.status === "failed") {
           setPageStatus((s) => ({ ...s, [page.id]: "failed" }));
         } else {
-          setPageStatus((s) => ({ ...s, [page.id]: run.reused ? "reused" : "extracted" }));
+          setPageStatus((s) => ({ ...s, [page.id]: run.reused ? "reused" : "curated" }));
         }
       } catch {
         setPageStatus((s) => ({ ...s, [page.id]: "failed" }));
       }
     }
-    setExtracting(false);
+    setCurating(false);
   }
 
   async function handleCompilePending() {
@@ -337,38 +461,38 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     setCompileResult(null);
 
     try {
-      let pending: Array<{ page_id: string; run_id: string }>;
+      let pendingPageIds: string[];
       if (selectedPages.size > 0) {
-        // Individual selection takes priority
-        pending = filtered
+        pendingPageIds = filtered
           .filter((p) => selectedPages.has(p.id) && runs[p.id]?.status === "succeeded")
-          .map((p) => ({ page_id: p.id, run_id: runs[p.id].id }));
+          .map((p) => p.id);
       } else if (forceCompileAll) {
-        pending = filtered
+        pendingPageIds = filtered
           .filter((p) => runs[p.id]?.status === "succeeded")
-          .map((p) => ({ page_id: p.id, run_id: runs[p.id].id }));
+          .map((p) => p.id);
       } else {
-        pending = await api.getPendingCompileRuns(selectedSpace);
+        const pending = await api.getPendingCompileRuns(selectedSpace);
+        pendingPageIds = pending.map((p) => p.page_id);
       }
 
-      if (pending.length === 0) {
+      if (pendingPageIds.length === 0) {
         setError(selectedPages.size > 0
-          ? "None of the selected pages have a succeeded extraction."
-          : "No pages pending compile — all extracted pages are already up to date.");
+          ? "None of the selected pages have a succeeded curation."
+          : "No pages pending compile — all curated pages are already up to date.");
         setCompiling(false);
         return;
       }
 
       // Stream SSE compile progress — updates each page status in real time
       const token = getToken();
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/v1/extraction-runs/batch-compile-stream`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/v1/curation-runs/batch-compile-stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: pending.map((p) => ({ run_id: p.run_id, page_id: p.page_id })),
+          page_ids: pendingPageIds,
           product_key: compileProductKey,
           name: compileProductName,
           owner: compileOwner,
@@ -430,8 +554,8 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
       }
 
       // Refresh run history after stream closes
-      const historyMap = await api.getBulkExtractionHistory(selectedSpace).catch(() => ({} as Record<string, ExtractionRun[]>));
-      const newRuns: Record<string, ExtractionRun> = {};
+      const historyMap = await api.getBulkCurationHistory(selectedSpace).catch(() => ({} as Record<string, CurationRun[]>));
+      const newRuns: Record<string, CurationRun> = {};
       (pages ?? []).forEach((p) => {
         const pageRuns = historyMap[p.id] ?? [];
         if (pageRuns.length > 0) newRuns[p.id] = pageRuns[0];
@@ -455,7 +579,7 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
     !search || p.title.toLowerCase().includes(search.toLowerCase())
   );
 
-  const pendingExtractCount = filtered.filter((p) => {
+  const pendingCurateCount = filtered.filter((p) => {
     const run = runs[p.id];
     return !run || run.status === "failed";
   }).length;
@@ -516,16 +640,16 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
         <div className="mb-5 rounded-lg border border-gray-200 bg-white p-4 space-y-4">
           <div className="flex flex-wrap gap-3 items-center">
             <div>
-              <p className="text-xs font-medium text-gray-700 mb-1">Step 1 — Extract</p>
+              <p className="text-xs font-medium text-gray-700 mb-1">Step 1 — Curate</p>
               <button
-                onClick={handleExtractAll}
-                disabled={extracting || compiling}
+                onClick={handleCurateAll}
+                disabled={curating || compiling}
                 className="rounded bg-gray-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-gray-700 disabled:opacity-50"
               >
-                {extracting ? "Extracting…" : `Extract All ${filtered.length} Pages`}
+                {curating ? "Curating…" : `Curate All ${filtered.length} Pages`}
               </button>
-              {pendingExtractCount > 0 && !extracting && (
-                <p className="mt-1 text-xs text-amber-700">{pendingExtractCount} page{pendingExtractCount !== 1 ? "s" : ""} not yet extracted</p>
+              {pendingCurateCount > 0 && !curating && (
+                <p className="mt-1 text-xs text-amber-700">{pendingCurateCount} page{pendingCurateCount !== 1 ? "s" : ""} not yet curated</p>
               )}
             </div>
             <div className="w-px h-10 bg-gray-200 hidden sm:block" />
@@ -551,7 +675,7 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
                   placeholder="Owner" className="rounded border border-gray-300 px-2 py-1 text-xs w-28" />
                 <button
                   onClick={handleCompilePending}
-                  disabled={extracting || compiling}
+                  disabled={curating || compiling}
                   className={`rounded px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${
                     selectedPages.size > 0 ? "bg-indigo-600 hover:bg-indigo-700" :
                     forceCompileAll ? "bg-orange-600 hover:bg-orange-700" : "bg-blue-700 hover:bg-blue-800"
@@ -576,7 +700,7 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
                     onChange={(e) => setForceCompileAll(e.target.checked)}
                     className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
                   />
-                  <span className="text-xs text-gray-600">Compile All — force recompile all extracted pages in current scope</span>
+                  <span className="text-xs text-gray-600">Compile All — force recompile all curated pages in current scope</span>
                 </label>
                 {allFilteredSucceeded.length > 0 && (
                   <label className="flex items-center gap-1.5 cursor-pointer select-none">
@@ -601,10 +725,10 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
               </div>
               <p className="mt-1 text-xs text-gray-400">
                 {selectedPages.size > 0
-                  ? `${selectedPages.size} page${selectedPages.size !== 1 ? "s" : ""} selected — ${selectedSucceededCount} with succeeded extraction will be compiled.`
+                  ? `${selectedPages.size} page${selectedPages.size !== 1 ? "s" : ""} selected — ${selectedSucceededCount} with succeeded curation will be compiled.`
                   : forceCompileAll
-                  ? `Force recompiling all ${allSucceededCount} extracted page${allSucceededCount !== 1 ? "s" : ""} in current scope.`
-                  : "Only compiles pages with new extractions since last compile."}
+                  ? `Force recompiling all ${allSucceededCount} curated page${allSucceededCount !== 1 ? "s" : ""} in current scope.`
+                  : "Only compiles pages with new curations since last compile."}
               </p>
             </div>
           </div>
@@ -634,7 +758,7 @@ function PagesTab({ isOwner, router, user }: { isOwner: boolean; router: ReturnT
                     });
                   }}
                   className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed"
-                  title={isSelectable ? "Select for compile" : "No succeeded extraction"}
+                  title={isSelectable ? "Select for compile" : "No succeeded curation"}
                 />
               </div>
               <div className="flex-1 min-w-0">
@@ -669,8 +793,8 @@ function statusBadge(status: string) {
     failed: "bg-red-100 text-red-800",
     running: "bg-yellow-100 text-yellow-800",
     pending: "bg-gray-100 text-gray-700",
-    extracting: "bg-yellow-100 text-yellow-800",
-    extracted: "bg-blue-100 text-blue-800",
+    curating: "bg-yellow-100 text-yellow-800",
+    curated: "bg-blue-100 text-blue-800",
     reused: "bg-purple-100 text-purple-800",
     compiling: "bg-yellow-100 text-yellow-800",
     compiled: "bg-green-100 text-green-800",
@@ -690,7 +814,7 @@ function shortId(id: string) {
 
 interface PageCardProps {
   page: ConfluencePage;
-  run: ExtractionRun | null;
+  run: CurationRun | null;
   status: PageStatus;
   expanded: boolean;
   loadingDetail: boolean;
@@ -713,8 +837,8 @@ function PageCard({ page, run, status, expanded, loadingDetail, pageDetail, onTo
         <div className="flex shrink-0 items-center gap-2">
           {status !== "idle" && (
             <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusBadge(status)}`}>
-              {status === "extracting" ? "Extracting…" :
-               status === "extracted" ? "Extracted" :
+              {status === "curating" ? "Curating…" :
+               status === "curated" ? "Curated" :
                status === "reused" ? "Reused (cached)" :
                status === "compiling" ? "Compiling…" :
                status === "compiled" ? "Compiled" :
@@ -745,12 +869,12 @@ function PageCard({ page, run, status, expanded, loadingDetail, pageDetail, onTo
         </div>
       )}
 
-      {/* Extraction + Compile info boxes */}
+      {/* Curation + Compile info boxes */}
       {run && (
         <div className="mt-3 border-t border-gray-100 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {/* Extraction box */}
+          {/* Curation box */}
           <div className="rounded border border-gray-100 bg-gray-50 px-3 py-2 text-xs space-y-1">
-            <p className="font-medium text-gray-700 text-[11px] uppercase tracking-wide">Last Extraction</p>
+            <p className="font-medium text-gray-700 text-[11px] uppercase tracking-wide">Last Curation</p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <span className={`rounded px-1.5 py-0.5 font-medium ${statusBadge(run.status)}`}>{run.status}</span>
               <span className="text-gray-500 font-mono">{shortId(run.id)}</span>
@@ -769,7 +893,7 @@ function PageCard({ page, run, status, expanded, loadingDetail, pageDetail, onTo
   );
 }
 
-function CompileBox({ run, onNavigate }: { run: ExtractionRun; onNavigate: (id: string) => void }) {
+function CompileBox({ run, onNavigate }: { run: CurationRun; onNavigate: (id: string) => void }) {
   const hasAnyCompile = run.compile_status || run.compiled_at;
   const latestSucceeded = run.compile_status === "succeeded";
   const latestFailed = run.compile_status === "failed";
@@ -833,10 +957,105 @@ function CompileBox({ run, onNavigate }: { run: ExtractionRun; onNavigate: (id: 
 
 // ── Web Wikis Tab ─────────────────────────────────────────────────────────────
 
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "not_curated", label: "Not Curated" },
+  { value: "curated", label: "Curated" },
+  { value: "curation_failed", label: "Curation Failed" },
+  { value: "compiled_to_kp", label: "Compiled to KP" },
+  { value: "not_compiled_to_kp", label: "Not Compiled to KP" },
+  { value: "compile_failed", label: "Compile Failed" },
+];
+
+function getDistinctStatuses(pages: import("@/lib/types").WebPage[]): { value: string; label: string }[] {
+  const present = new Set<string>();
+  pages.forEach((pg) => {
+    if (!pg.latest_run_status) present.add("not_curated");
+    else if (pg.latest_run_status === "succeeded") present.add("curated");
+    else if (pg.latest_run_status === "failed") present.add("curation_failed");
+    if (pg.is_compiled) present.add("compiled_to_kp");
+    else if (pg.latest_run_status === "succeeded") present.add("not_compiled_to_kp");
+    if (pg.latest_compile_status === "skipped") present.add("compile_failed");
+  });
+  return STATUS_OPTIONS.filter((o) => present.has(o.value));
+}
+
+function StatusMultiSelect({
+  pages,
+  selected,
+  onChange,
+}: {
+  pages: import("@/lib/types").WebPage[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const options = getDistinctStatuses(pages);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open]);
+
+  function toggle(value: string) {
+    onChange(selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value]);
+  }
+
+  const label = selected.length === 0 ? "All" : selected.map((v) => STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v).join(", ");
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`flex items-center gap-1.5 rounded border px-2 py-1 text-xs ${selected.length > 0 ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-gray-300 bg-white text-gray-600"} hover:border-indigo-400`}
+      >
+        <span className="shrink-0 text-gray-500">Status:</span>
+        <span className="max-w-[200px] truncate">{label}</span>
+        <span className="text-gray-400 shrink-0">▾</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-20 rounded border border-gray-200 bg-white shadow-lg min-w-[180px] py-1">
+          {options.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-gray-400 italic">No data yet</p>
+          ) : (
+            <>
+              {options.map(({ value, label: optLabel }) => (
+                <label key={value} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(value)}
+                    onChange={() => toggle(value)}
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span className="text-xs text-gray-700">{optLabel}</span>
+                </label>
+              ))}
+              {selected.length > 0 && (
+                <div className="border-t border-gray-100 mt-1 pt-1">
+                  <button
+                    onClick={() => { onChange([]); setOpen(false); }}
+                    className="w-full px-3 py-1.5 text-xs text-left text-gray-400 hover:text-gray-600"
+                  >
+                    Clear selection
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type CrawlEvent =
   | { type: "crawling"; url: string; queued: number; visited: number }
-  | { type: "page_found"; url: string; page_id: string; title: string }
-  | { type: "page_updated"; url: string; page_id: string; title: string }
+  | { type: "page_found"; url: string; page_id: string; title: string; thin_content?: boolean }
+  | { type: "page_updated"; url: string; page_id: string; title: string; thin_content?: boolean }
   | { type: "page_unchanged"; url: string; page_id: string }
   | { type: "page_skipped"; url: string; reason: string }
   | { type: "page_error"; url: string; error: string }
@@ -882,12 +1101,17 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
   const [crawlStats, setCrawlStats] = useState<{ visited: number; queued: number; found: number }>({ visited: 0, queued: 0, found: 0 });
   const [crawlLog, setCrawlLog] = useState<string[]>([]);
   const [crawlResult, setCrawlResult] = useState<{ created: number; updated: number; skipped: number } | null>(null);
-  const [extractingPages, setExtractingPages] = useState<Set<string>>(new Set());
-  const [extractingAll, setExtractingAll] = useState<string | null>(null);
+  const [curatingPages, setCuratingPages] = useState<Set<string>>(new Set());
+  const [curatingAll, setCuratingAll] = useState<string | null>(null);
   const [pageFilters, setPageFilters] = useState<Record<string, FilterRow[]>>({});
-  const [extractionStatusFilter, setExtractionStatusFilter] = useState<Record<string, "none" | "succeeded" | "failed" | "running" | "compiled" | "not_compiled" | null>>({});
-  const [colWidths, setColWidths] = useState({ cb: 36, title: 260, url: 420, extraction: 200, fetched: 170, action: 140 });
-  const [compileForm, setCompileForm] = useState<Record<string, { productKey: string; name: string; owner: string } | null>>({});
+  const [curationStatusFilter, setCurationStatusFilter] = useState<Record<string, string[]>>({});
+  const [colWidths, setColWidths] = useState({ cb: 36, title: 260, url: 420, curation: 200, compiled_kp: 110, fetched: 170, action: 140 });
+  const [selectedKpId, setSelectedKpId] = useState<string | null>(null);
+  const [showNotInKp, setShowNotInKp] = useState(false);
+  const [compiledKps, setCompiledKps] = useState<Record<string, import("@/lib/types").CompiledKpSummary[]>>({});
+  const [kpStatusMap, setKpStatusMap] = useState<Record<string, Record<string, "compiled" | "not_relevant" | "none">>>({});
+  const [showLegend, setShowLegend] = useState(false);
+  const [compileForm, setCompileForm] = useState<Record<string, { productKey: string; name: string; owner: string; brief: string } | null>>({});
   const [compiling, setCompiling] = useState<Record<string, boolean>>({});
   const [compiledKp, setCompiledKp] = useState<Record<string, { id: string; name: string; semver: string } | null>>({});
   const [compilePageStatus, setCompilePageStatus] = useState<Record<string, Record<string, "compiling" | "compiled" | "discarded" | "failed">>>({});
@@ -897,29 +1121,53 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
   const [draftLoading, setDraftLoading] = useState(false);
   const [addName, setAddName] = useState("");
   const [addUrl, setAddUrl] = useState("");
+  const [addDepth, setAddDepth] = useState<number | null>(1);
+  const [addIncludeQuery, setAddIncludeQuery] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Links popup modal
+  const [linksModal, setLinksModal] = useState<{ pageId: string; pageTitle: string; sourceId: string } | null>(null);
+  const [linksModalData, setLinksModalData] = useState<LinkTreeResponse | null>(null);
+  const [linksModalLoading, setLinksModalLoading] = useState(false);
   // Per-page link expansion: pageId → links (null = not loaded, [] = loaded empty)
   const [expandedLinks, setExpandedLinks] = useState<Record<string, WebPageLink[] | null>>({});
   const [loadingLinks, setLoadingLinks] = useState<Set<string>>(new Set());
   // Per-source selected page IDs for compilation
   const [selectedWebPages, setSelectedWebPages] = useState<Record<string, Set<string>>>({});
-  // Per-source toggle: include linked pages in compilation
-  const [includeLinkedPages, setIncludeLinkedPages] = useState<Record<string, boolean>>({});;
+  // Linked pages curation confirmation modal
+  const [linkedCurationModal, setLinkedCurationModal] = useState<{
+    sourceId: string;
+    pages: import("@/lib/types").WebPage[];
+    checked: Set<string>;
+  } | null>(null);
+  const [queueingLinked, setQueueingLinked] = useState(false);
 
   useEffect(() => {
     api.listWebSources().then(setSources).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!selectedKpId || !expandedSource) return;
+    api.getKpPageStatus(expandedSource, selectedKpId)
+      .then((rows) => {
+        const map: Record<string, "compiled" | "not_relevant" | "none"> = {};
+        rows.forEach((r) => { map[r.page_id] = r.status; });
+        setKpStatusMap((prev) => ({ ...prev, [expandedSource]: map }));
+      })
+      .catch(() => {});
+  }, [selectedKpId, expandedSource]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAdding(true);
     setError(null);
     try {
-      const src = await api.createWebSource(addName.trim(), addUrl.trim());
+      const src = await api.createWebSource(addName.trim(), addUrl.trim(), addDepth, addIncludeQuery);
       setSources((s) => [...s, src]);
       setAddName("");
       setAddUrl("");
+      setAddDepth(1);
+      setAddIncludeQuery(false);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -976,9 +1224,9 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
           setCrawlStats({ visited: ev.visited, queued: ev.queued, found: 0 });
         } else if (ev.type === "page_found") {
           setCrawlStats((s) => ({ ...s, found: s.found + 1 }));
-          setCrawlLog((l) => [...l.slice(-99), `+ ${ev.title || ev.url}`]);
+          setCrawlLog((l) => [...l.slice(-99), `+ ${ev.title || ev.url}${ev.thin_content ? " (thin content)" : ""}`]);
         } else if (ev.type === "page_updated") {
-          setCrawlLog((l) => [...l.slice(-99), `↻ ${ev.title || ev.url}`]);
+          setCrawlLog((l) => [...l.slice(-99), `↻ ${ev.title || ev.url}${ev.thin_content ? " (thin content)" : ""}`]);
         } else if (ev.type === "page_unchanged") {
           // silent
         } else if (ev.type === "page_skipped" || ev.type === "page_error") {
@@ -1013,6 +1261,8 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
       const pg = await api.listWebPages(sourceId).catch(() => []);
       setPages((p) => ({ ...p, [sourceId]: pg }));
     }
+    const kps = await api.getCompiledKps(sourceId).catch(() => []);
+    setCompiledKps((prev) => ({ ...prev, [sourceId]: kps }));
   }
 
   async function handleViewDraft(runId: string, title: string) {
@@ -1020,7 +1270,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     setDraftJson(null);
     setDraftLoading(true);
     try {
-      const run = await api.getExtractionRun(runId);
+      const run = await api.getCurationRun(runId);
       setDraftJson(run.structured_draft ?? null);
     } catch (err) {
       setDraftJson({ error: String(err) });
@@ -1029,10 +1279,10 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     }
   }
 
-  async function handleExtractPage(sourceId: string, pageId: string) {
-    setExtractingPages((s) => new Set(s).add(pageId));
+  async function handleCuratePage(sourceId: string, pageId: string, showLinkedModal = false) {
+    setCuratingPages((s) => new Set(s).add(pageId));
     try {
-      const result = await api.extractWebPage(sourceId, pageId);
+      const result = await api.curateWebPage(sourceId, pageId);
       // Update page status in local state
       setPages((prev) => ({
         ...prev,
@@ -1042,16 +1292,20 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             : pg
         ),
       }));
+      if (showLinkedModal && result.status === "succeeded") {
+        const allPages = await api.listWebPages(sourceId).catch(() => [] as import("@/lib/types").WebPage[]);
+        setPages((p) => ({ ...p, [sourceId]: allPages }));
+        checkLinkedPagesModal(sourceId, allPages);
+      }
     } catch (err) {
       setError(String(err));
     } finally {
-      setExtractingPages((s) => { const n = new Set(s); n.delete(pageId); return n; });
+      setCuratingPages((s) => { const n = new Set(s); n.delete(pageId); return n; });
     }
   }
 
   async function handleToggleLinks(sourceId: string, pageId: string) {
     if (expandedLinks[pageId] !== undefined) {
-      // Already loaded — toggle off
       setExpandedLinks((s) => { const n = { ...s }; delete n[pageId]; return n; });
       return;
     }
@@ -1066,13 +1320,46 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     }
   }
 
-  async function handleExtractAll(sourceId: string, filtered: import("@/lib/types").WebPage[]) {
-    setExtractingAll(sourceId);
-    const pending = filtered.filter((pg) => !pg.latest_run_status || pg.latest_run_status === "failed" || pg.latest_run_status === "running");
-    for (const pg of pending) {
-      await handleExtractPage(sourceId, pg.id);
+  async function handleOpenLinksModal(sourceId: string, pageId: string, pageTitle: string) {
+    setLinksModal({ pageId, pageTitle, sourceId });
+    setLinksModalData(null);
+    setLinksModalLoading(true);
+    try {
+      const tree = await api.getWebPageLinkTree(sourceId, pageId);
+      setLinksModalData(tree);
+    } catch {
+      setLinksModalData(null);
+    } finally {
+      setLinksModalLoading(false);
     }
-    setExtractingAll(null);
+  }
+
+  async function handleCurateAll(sourceId: string, filtered: import("@/lib/types").WebPage[]) {
+    setCuratingAll(sourceId);
+    const pending = filtered.filter(
+      (pg) =>
+        !pg.latest_run_status ||
+        pg.latest_run_status === "failed" ||
+        pg.latest_run_status === "running" ||
+        pg.changed_since_extraction
+    );
+    for (const pg of pending) {
+      await handleCuratePage(sourceId, pg.id);
+    }
+    setCuratingAll(null);
+    // After bulk curation, check if there are linked pages needing curation
+    const allPages = await api.listWebPages(sourceId).catch(() => [] as import("@/lib/types").WebPage[]);
+    setPages((p) => ({ ...p, [sourceId]: allPages }));
+    checkLinkedPagesModal(sourceId, allPages);
+  }
+
+  function checkLinkedPagesModal(sourceId: string, allPages: import("@/lib/types").WebPage[]) {
+    const linked = allPages.filter(
+      (pg) => !pg.latest_run_status || pg.changed_since_extraction
+    );
+    if (linked.length > 0) {
+      setLinkedCurationModal({ sourceId, pages: linked, checked: new Set(linked.map((p) => p.id)) });
+    }
   }
 
   async function handleCompile(sourceId: string, filteredPages: import("@/lib/types").WebPage[]) {
@@ -1082,59 +1369,31 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     const pool = sel && sel.size > 0
       ? filteredPages.filter((pg) => sel.has(pg.id))
       : filteredPages;
-    const baseItems = pool
-      .filter((pg) => pg.latest_run_status === "succeeded" && pg.latest_run_id)
-      .map((pg) => ({ run_id: pg.latest_run_id!, page_id: pg.id }));
+    const pageIds = pool
+      .filter((pg) => pg.latest_run_status === "succeeded")
+      .map((pg) => pg.id);
 
-    // If "include linked pages" is on, expand each selected page's links
-    let items = baseItems;
-    if (includeLinkedPages[sourceId]) {
-      const itemPageIds = new Set(baseItems.map((i) => i.page_id));
-      const extraItems: { run_id: string; page_id: string }[] = [];
-      const token = getToken();
-      const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
-      for (const item of baseItems) {
-        // Use cached links if already expanded, otherwise fetch
-        let links = expandedLinks[item.page_id];
-        if (links === undefined || links === null) {
-          try {
-            const src = sources.find((s) => filteredPages.some((p) => p.id === item.page_id));
-            const srcId = src?.id ?? sourceId;
-            const r = await fetch(`${apiBase}/web-sources/${srcId}/pages/${item.page_id}/links`, {
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-            if (r.ok) links = await r.json();
-          } catch { links = []; }
-        }
-        for (const lnk of links ?? []) {
-          if (lnk.linked_page_run_status === "succeeded" && lnk.linked_page_run_id && lnk.linked_page_id && !itemPageIds.has(lnk.linked_page_id)) {
-            itemPageIds.add(lnk.linked_page_id);
-            extraItems.push({ run_id: lnk.linked_page_run_id, page_id: lnk.linked_page_id });
-          }
-        }
-      }
-      items = [...baseItems, ...extraItems];
-    }
-    if (!items.length) return;
+    if (!pageIds.length) return;
 
     setCompiling((c) => ({ ...c, [sourceId]: true }));
     setCompilePageStatus((s) => ({ ...s, [sourceId]: {} }));
-    setCompileProgress((p) => ({ ...p, [sourceId]: { done: 0, total: items.length } }));
+    setCompileProgress((p) => ({ ...p, [sourceId]: { done: 0, total: pageIds.length } }));
     setError(null);
 
     const token = getToken();
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1"}/extraction-runs/batch-compile-stream`,
+        `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1"}/curation-runs/batch-compile-stream`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           body: JSON.stringify({
-            items,
+            page_ids: pageIds,
             product_key: form.productKey.trim(),
             name: form.name.trim(),
             owner: form.owner.trim(),
             created_by: user?.user_id ?? "00000000-0000-0000-0000-000000000000",
+            brief: form.brief.trim() || null,
           }),
         }
       );
@@ -1175,6 +1434,8 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             setCompileForm((f) => ({ ...f, [sourceId]: null }));
             // Snap done to total so progress always shows 100% on completion
             setCompileProgress((p) => ({ ...p, [sourceId]: { ...p[sourceId], done: p[sourceId]?.total ?? p[sourceId]?.done ?? 0 } }));
+            // Refresh compiled KPs list
+            api.getCompiledKps(sourceId).then((kps) => setCompiledKps((prev) => ({ ...prev, [sourceId]: kps }))).catch(() => {});
             break outer;
           } else if (ev.type === "error") {
             setError(ev.message as string);
@@ -1196,17 +1457,6 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
         cur.delete(pageId);
       } else {
         cur.add(pageId);
-        // Also auto-select linked child pages that are in this source and have a succeeded extraction
-        const links = expandedLinks[pageId];
-        if (links) {
-          const srcPageIds = new Set(srcPages.map((p) => p.id));
-          for (const lnk of links) {
-            if (lnk.linked_page_id && srcPageIds.has(lnk.linked_page_id)) {
-              const linked = srcPages.find((p) => p.id === lnk.linked_page_id);
-              if (linked?.latest_run_status === "succeeded") cur.add(lnk.linked_page_id);
-            }
-          }
-        }
       }
       return { ...prev, [sourceId]: cur };
     });
@@ -1228,22 +1478,22 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     window.addEventListener("mouseup", onUp);
   }
 
-  function extractionBadge(status: string | null, runId?: string | null, title?: string) {
+  function curationBadge(status: string | null, runId?: string | null, title?: string) {
     if (!status) return <span className="text-gray-300 text-xs">—</span>;
     const map: Record<string, string> = {
       running: "bg-yellow-100 text-yellow-700",
       succeeded: "bg-green-100 text-green-700",
       failed: "bg-red-100 text-red-700",
     };
-    const label: Record<string, string> = { running: "Extracting…", succeeded: "Extracted", failed: "Failed" };
+    const label: Record<string, string> = { running: "Curating…", succeeded: "Curated", failed: "Failed" };
     if (status === "succeeded" && runId) {
       return (
         <button
           onClick={() => handleViewDraft(runId, title ?? "")}
           className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${map.succeeded} hover:ring-1 hover:ring-green-400 underline-offset-1`}
-          title="View extracted draft JSON"
+          title="View curated draft JSON"
         >
-          Extracted ↗
+          Curated ↗
         </button>
       );
     }
@@ -1254,8 +1504,80 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     );
   }
 
+  async function handleConfirmLinkedCuration() {
+    if (!linkedCurationModal) return;
+    const { sourceId, checked } = linkedCurationModal;
+    const pageIds = Array.from(checked);
+    if (!pageIds.length) { setLinkedCurationModal(null); return; }
+    setQueueingLinked(true);
+    try {
+      await api.batchQueueCuration(sourceId, pageIds);
+      // Refresh pages to show pending statuses
+      const refreshed = await api.listWebPages(sourceId).catch(() => [] as import("@/lib/types").WebPage[]);
+      setPages((p) => ({ ...p, [sourceId]: refreshed }));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setQueueingLinked(false);
+      setLinkedCurationModal(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
+      {/* Linked curation confirmation modal */}
+      {linkedCurationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-xl p-6">
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">
+              {linkedCurationModal.pages.length} linked page{linkedCurationModal.pages.length !== 1 ? "s are" : " is"} uncurated or have changed content
+            </h2>
+            <p className="text-xs text-gray-500 mb-4">Curate them now? They will be queued for background curation.</p>
+            <div className="max-h-48 overflow-y-auto space-y-1 border border-gray-100 rounded-lg bg-gray-50 px-3 py-2 mb-4">
+              {linkedCurationModal.pages.map((pg) => (
+                <label key={pg.id} className="flex items-center gap-2 cursor-pointer py-0.5">
+                  <input
+                    type="checkbox"
+                    checked={linkedCurationModal.checked.has(pg.id)}
+                    onChange={(e) => {
+                      setLinkedCurationModal((m) => {
+                        if (!m) return m;
+                        const next = new Set(m.checked);
+                        if (e.target.checked) next.add(pg.id); else next.delete(pg.id);
+                        return { ...m, checked: next };
+                      });
+                    }}
+                    className="rounded border-gray-300 text-indigo-600"
+                  />
+                  <span className="text-xs font-medium text-gray-800 truncate max-w-xs">{pg.title}</span>
+                  {pg.changed_since_extraction && (
+                    <span className="text-[10px] rounded-full bg-amber-100 text-amber-700 px-1.5 py-0.5 shrink-0">Changed</span>
+                  )}
+                  {!pg.latest_run_status && (
+                    <span className="text-[10px] rounded-full bg-gray-100 text-gray-500 px-1.5 py-0.5 shrink-0">Not curated</span>
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setLinkedCurationModal(null)}
+                className="rounded border border-gray-300 px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Skip
+              </button>
+              <button
+                onClick={handleConfirmLinkedCuration}
+                disabled={queueingLinked || linkedCurationModal.checked.size === 0}
+                className="rounded bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {queueingLinked ? "Queuing…" : `Curate ${linkedCurationModal.checked.size} linked page${linkedCurationModal.checked.size !== 1 ? "s" : ""}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add source form */}
       {isOwner && (
         <form onSubmit={handleAdd} className="rounded-lg border border-gray-200 bg-white p-5 space-y-3">
@@ -1282,7 +1604,32 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                 className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
               />
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Crawl Depth</label>
+              <select
+                value={addDepth === null ? "recursive" : String(addDepth)}
+                onChange={(e) => setAddDepth(e.target.value === "recursive" ? null : Number(e.target.value))}
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="1">1 — Direct links only</option>
+                <option value="2">2 — Links of links</option>
+                <option value="3">3 — Three levels deep</option>
+                <option value="recursive">Recursive — entire domain</option>
+              </select>
+            </div>
           </div>
+          <label
+            className="flex items-center gap-2 text-xs text-gray-700"
+            title="Enable for sites where ?id= or ?page= selects different content"
+          >
+            <input
+              type="checkbox"
+              checked={addIncludeQuery}
+              onChange={(e) => setAddIncludeQuery(e.target.checked)}
+              className="rounded"
+            />
+            Treat query strings as separate pages
+          </label>
           {error && <p className="text-xs text-red-500">{error}</p>}
           <button
             type="submit"
@@ -1303,16 +1650,35 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             const isCrawling = crawlingId === src.id;
             const srcPages = pages[src.id] ?? [];
             const filterRows = pageFilters[src.id] ?? [DEFAULT_FILTER_ROW];
-            const statusFilter = extractionStatusFilter[src.id] ?? null;
+            const selectedStatuses = curationStatusFilter[src.id] ?? [];
             const filteredPages = applyPageFilters(srcPages, filterRows).filter((pg) => {
-              if (!statusFilter) return true;
-              if (statusFilter === "none") return !pg.latest_run_status;
-              if (statusFilter === "compiled") return pg.is_compiled;
-              if (statusFilter === "not_compiled") return !pg.is_compiled;
-              return pg.latest_run_status === statusFilter;
+              if (!selectedStatuses.length) return true;
+              return selectedStatuses.some((s) => {
+                if (s === "not_curated") return !pg.latest_run_status;
+                if (s === "curated") return pg.latest_run_status === "succeeded";
+                if (s === "curation_failed") return pg.latest_run_status === "failed";
+                if (s === "compiled_to_kp") return pg.is_compiled;
+                if (s === "not_compiled_to_kp") return pg.latest_run_status === "succeeded" && !pg.is_compiled;
+                if (s === "compile_failed") return pg.latest_compile_status === "skipped";
+                return false;
+              });
             });
-            const hasFilter = filterRows.some((r) => r.pattern.trim()) || !!statusFilter;
-            const pendingExtract = filteredPages.filter((pg) => !pg.latest_run_status || pg.latest_run_status === "failed" || pg.latest_run_status === "running").length;
+            const hasFilter = filterRows.some((r) => r.pattern.trim()) || selectedStatuses.length > 0;
+
+            // KP filter
+            const statusMap = kpStatusMap[src.id] ?? {};
+            let kpFiltered = filteredPages;
+            if (selectedKpId) {
+              if (showNotInKp) {
+                kpFiltered = filteredPages.filter((pg) => {
+                  const s = statusMap[pg.id] ?? "none";
+                  return s === "not_relevant" || s === "none";
+                });
+              } else {
+                kpFiltered = filteredPages.filter((pg) => statusMap[pg.id] === "compiled");
+              }
+            }
+            const displayPages = kpFiltered;
 
             function setRows(updater: (rows: FilterRow[]) => FilterRow[]) {
               setPageFilters((f) => ({ ...f, [src.id]: updater(f[src.id] ?? [DEFAULT_FILTER_ROW]) }));
@@ -1331,20 +1697,45 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             }
             function clearFilters() {
               setPageFilters((f) => ({ ...f, [src.id]: [DEFAULT_FILTER_ROW] }));
-              setExtractionStatusFilter((f) => ({ ...f, [src.id]: null }));
+              setCurationStatusFilter((f) => ({ ...f, [src.id]: [] }));
             }
+
+            const crawlPending = src.crawl_status === "PENDING";
+            const crawlFailed = src.crawl_status === "FAILED";
+            const crawlTip = src.successful_crawl_count === 0
+              ? "This source has never been successfully crawled."
+              : src.successful_crawl_count === 1
+              ? "Previously crawled successfully 1 time."
+              : `Previously crawled successfully ${src.successful_crawl_count} times.`;
 
             return (
               <div key={src.id} className="rounded-lg border border-gray-200 bg-white">
+                {/* Crawl FAILED warning banner */}
+                {crawlFailed && !isCrawling && (
+                  <div className="rounded-t-lg border-b border-amber-200 bg-amber-50 px-5 py-2 flex items-center gap-2">
+                    <span className="text-amber-600">⚠</span>
+                    <span className="text-xs text-amber-800 font-medium">Last crawl failed.</span>
+                    <span className="text-xs text-amber-700">{crawlTip}</span>
+                  </div>
+                )}
                 {/* Header row */}
                 <div className="flex items-center justify-between px-5 py-4">
                   <div>
-                    <p className="text-sm font-semibold text-gray-900">{src.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-gray-900">{src.name}</p>
+                      {crawlPending && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700 font-medium">
+                          <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse inline-block" />
+                          Crawl in progress…
+                        </span>
+                      )}
+                    </div>
                     <a href={src.root_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
                       {src.root_url}
                     </a>
                     <p className="text-xs text-gray-400 mt-0.5">
                       {src.page_count} page{src.page_count !== 1 ? "s" : ""}
+                      {" · depth: "}{src.crawl_depth === null ? "recursive" : src.crawl_depth}
                       {src.last_crawled_at ? ` · last crawled ${new Date(src.last_crawled_at).toLocaleString()}` : " · never crawled"}
                       {src.last_crawl_created != null && (
                         <span> · +{src.last_crawl_created} new, ↻{src.last_crawl_updated} updated, ✗{src.last_crawl_skipped} skipped</span>
@@ -1362,7 +1753,8 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                       <>
                         <button
                           onClick={() => handleCrawl(src)}
-                          disabled={isCrawling}
+                          disabled={isCrawling || crawlPending || !!curatingAll}
+                          title={curatingAll ? "Cannot crawl while curation is running" : undefined}
                           className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                         >
                           {isCrawling ? "Crawling…" : "Crawl"}
@@ -1424,26 +1816,13 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                       <>
                         {/* Filter bar */}
                         <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 space-y-1.5">
-                          {/* Extraction status quick filter */}
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-xs text-gray-500 shrink-0">Status:</span>
-                            {([
-                              { value: null, label: "All" },
-                              { value: "none", label: "Not extracted" },
-                              { value: "succeeded", label: "Extracted" },
-                              { value: "failed", label: "Failed" },
-                              { value: "running", label: "Running" },
-                              { value: "compiled", label: "Compiled" },
-                              { value: "not_compiled", label: "Not compiled" },
-                            ] as { value: typeof statusFilter; label: string }[]).map(({ value, label }) => (
-                              <button
-                                key={String(value)}
-                                onClick={() => setExtractionStatusFilter((f) => ({ ...f, [src.id]: value }))}
-                                className={`px-2 py-0.5 rounded-full text-xs border transition-colors ${statusFilter === value ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-300 hover:border-indigo-400"}`}
-                              >
-                                {label}
-                              </button>
-                            ))}
+                          {/* Curation status multi-select filter */}
+                          <div className="flex items-center gap-1.5">
+                            <StatusMultiSelect
+                              pages={srcPages}
+                              selected={selectedStatuses}
+                              onChange={(next) => setCurationStatusFilter((f) => ({ ...f, [src.id]: next }))}
+                            />
                           </div>
                           <div className="border-t border-gray-200" />
                           {(filterRows.length ? filterRows : []).map((row, i) => {
@@ -1515,32 +1894,42 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
 
                         {/* Action bar */}
                         {isOwner && (() => {
-                          const extractedCount = filteredPages.filter((p) => p.latest_run_status === "succeeded").length;
                           const sel = selectedWebPages[src.id];
                           const selSize = sel?.size ?? 0;
+                          const allFilteredPending = filteredPages.filter((p) => !p.latest_run_status || p.latest_run_status === "failed");
+                          const allFilteredSucceeded = filteredPages.filter((p) => p.latest_run_status === "succeeded");
+                          // Pending within selection
+                          const pendingInSelection = selSize > 0
+                            ? filteredPages.filter((p) => sel!.has(p.id) && (!p.latest_run_status || p.latest_run_status === "failed"))
+                            : [];
+                          const curateTarget = selSize > 0 ? pendingInSelection : allFilteredPending;
+                          const curateCount = curateTarget.length;
+                          // Succeeded within selection
                           const selSucceededCount = selSize > 0
                             ? filteredPages.filter((p) => sel!.has(p.id) && p.latest_run_status === "succeeded").length
                             : 0;
-                          const compileCount = selSize > 0 ? selSucceededCount : extractedCount;
+                          const compileCount = selSize > 0 ? selSucceededCount : allFilteredSucceeded.length;
                           const form = compileForm[src.id] ?? null;
                           const isCompiling = compiling[src.id] ?? false;
                           const lastKp = compiledKp[src.id] ?? null;
-                          // Select-all logic for action bar
-                          const allFilteredSucceeded = filteredPages.filter((p) => p.latest_run_status === "succeeded");
-                          const allSelected = allFilteredSucceeded.length > 0 && allFilteredSucceeded.every((p) => sel?.has(p.id));
-                          const someSelected = allFilteredSucceeded.some((p) => sel?.has(p.id));
+                          const failedPages = filteredPages.filter((p) => p.latest_run_status === "failed");
+                          const hasFailedRuns = failedPages.length > 0;
+                          const compileBlocked = hasFailedRuns;
+                          const compileBlockReason = hasFailedRuns
+                            ? `${failedPages.length} page${failedPages.length !== 1 ? "s" : ""} have failed curation — fix before compiling`
+                            : undefined;
                           return (
                             <div className="border-b border-gray-200 bg-gray-50">
                               <div className="flex items-center justify-between px-4 py-2">
                                 <div className="flex items-center gap-3">
                                   <p className="text-xs text-gray-500">
-                                    {extractedCount} of {filteredPages.length} extracted
+                                    {allFilteredSucceeded.length} of {filteredPages.length} curated
                                     {hasFilter && ` (filtered)`}
-                                    {pendingExtract > 0 && ` · ${pendingExtract} pending`}
+                                    {allFilteredPending.length > 0 && ` · ${allFilteredPending.length} pending`}
                                   </p>
                                   {selSize > 0 && (
                                     <span className="text-xs text-indigo-600 font-medium">
-                                      {selSize} page{selSize !== 1 ? "s" : ""} selected ({selSucceededCount} extracted)
+                                      {selSize} selected ({selSucceededCount} curated, {pendingInSelection.length} pending)
                                     </span>
                                   )}
                                   {selSize > 0 && (
@@ -1552,28 +1941,26 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <button
-                                    onClick={() => handleExtractAll(src.id, filteredPages)}
-                                    disabled={extractingAll === src.id || pendingExtract === 0}
+                                    onClick={() => handleCurateAll(src.id, curateTarget)}
+                                    disabled={curatingAll === src.id || curateCount === 0 || crawlPending}
+                                    title={crawlPending ? "Cannot curate while a crawl is running" : undefined}
                                     className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
                                   >
-                                    {extractingAll === src.id ? "Extracting…" : `Extract ${pendingExtract} pending`}
+                                    {curatingAll === src.id ? "Curating…" : selSize > 0 ? `Curate ${curateCount} selected` : `Curate ${curateCount} pending`}
                                   </button>
-                                  <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={includeLinkedPages[src.id] ?? false}
-                                      onChange={(e) => setIncludeLinkedPages((prev) => ({ ...prev, [src.id]: e.target.checked }))}
-                                      className="rounded"
-                                    />
-                                    Include linked pages
-                                  </label>
                                   <button
-                                    onClick={() => setCompileForm((f) => ({ ...f, [src.id]: f[src.id] ? null : { productKey: "", name: src.name, owner: user?.display_name ?? "" } }))}
-                                    disabled={compileCount === 0}
+                                    onClick={() => setCompileForm((f) => ({ ...f, [src.id]: f[src.id] ? null : { productKey: "", name: src.name, owner: user?.display_name ?? "", brief: "" } }))}
+                                    disabled={compileCount === 0 || compileBlocked}
+                                    title={compileBlockReason}
                                     className={`rounded px-3 py-1 text-xs font-medium text-white disabled:opacity-40 ${selSize > 0 ? "bg-indigo-700 hover:bg-indigo-800" : "bg-indigo-600 hover:bg-indigo-700"}`}
                                   >
                                     {selSize > 0 ? `Compile ${compileCount} selected → KP` : `Compile ${compileCount} → KP`}
                                   </button>
+                                  {compileBlocked && (
+                                    <span className="text-xs text-red-600" title={compileBlockReason}>
+                                      {failedPages.length} failed
+                                    </span>
+                                  )}
                                 </div>
                               </div>
 
@@ -1609,6 +1996,20 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                         className="rounded border border-gray-300 px-2 py-1 text-xs w-32"
                                       />
                                     </div>
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs text-gray-500 mb-0.5">
+                                      Product Brief <span className="text-gray-400">(describe what this KP is about — used to filter irrelevant pages during compilation)</span>
+                                    </label>
+                                    <textarea
+                                      value={form.brief}
+                                      onChange={(e) => setCompileForm((f) => ({ ...f, [src.id]: { ...f[src.id]!, brief: e.target.value } }))}
+                                      placeholder="e.g. Customer self-service processes on posten.no — tracking parcels, managing delivery, address services and mail handling."
+                                      rows={2}
+                                      className="w-full rounded border border-gray-300 px-2 py-1 text-xs"
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-2">
                                     <button
                                       onClick={() => handleCompile(src.id, filteredPages)}
                                       disabled={isCompiling || !form.productKey.trim() || !form.name.trim() || !form.owner.trim()}
@@ -1660,29 +2061,114 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                             </div>
                           );
                         })()}
-                        {(() => {
-                          const sel = selectedWebPages[src.id];
-                          const allFilteredSucceeded = filteredPages.filter((p) => p.latest_run_status === "succeeded");
-                          const allSelected = allFilteredSucceeded.length > 0 && allFilteredSucceeded.every((p) => sel?.has(p.id));
-                          const someSelected = !allSelected && allFilteredSucceeded.some((p) => sel?.has(p.id));
-                          return null; // variables only — rendered below
-                        })()}
+                        {showLegend && (
+                          <div className="mx-0 mb-2 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3 text-xs text-gray-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="font-semibold text-indigo-700">Status legend</span>
+                              <button onClick={() => setShowLegend(false)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">×</button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-x-8 gap-y-1.5">
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 shrink-0">Curated</span>
+                                <span className="text-gray-500">LLM has analysed this page and produced a structured knowledge draft. Click the badge to view the draft JSON.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700 shrink-0">Curating…</span>
+                                <span className="text-gray-500">Curation is currently running for this page.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 shrink-0">Failed</span>
+                                <span className="text-gray-500">The last curation attempt returned an error. Hover the error text for details.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 shrink-0">Changed</span>
+                                <span className="text-gray-500">Page content was updated by a crawl since the last curation — re-curation (and re-compile) is recommended.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 shrink-0">Compiled</span>
+                                <span className="text-gray-500">The curated draft has been merged into a Knowledge Product version.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 shrink-0">Compiling…</span>
+                                <span className="text-gray-500">Compile is in progress — this page's draft is being merged into a KP version.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 shrink-0">Thin content</span>
+                                <span className="text-gray-500">Very little text was found during crawl. The page may require JavaScript to render fully.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 shrink-0">Discarded</span>
+                                <span className="text-gray-500">Already compiled in a previous session for this KP — skipped to avoid double-counting.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 shrink-0">In N KPs</span>
+                                <span className="text-gray-500">This page has been compiled into N Knowledge Products.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 shrink-0">Not relevant</span>
+                                <span className="text-gray-500">This page was processed during a compile but the LLM brief filter determined it was off-topic — not merged into the KP.</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 shrink-0">Not compiled</span>
+                                <span className="text-gray-500">This page has never been included in a compile run for this KP — visible when "Show pages not in KP" is checked.</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {/* KP filter bar */}
+                        {(compiledKps[src.id]?.length ?? 0) > 0 && (
+                          <div className="flex items-center gap-3 mb-2 px-4 py-2 border-b border-gray-100">
+                            <label className="text-xs text-gray-500 shrink-0">Filter by KP:</label>
+                            <select
+                              value={selectedKpId ?? ""}
+                              onChange={(e) => {
+                                setSelectedKpId(e.target.value || null);
+                                setShowNotInKp(false);
+                              }}
+                              className="rounded border border-gray-300 px-2 py-1 text-xs"
+                            >
+                              <option value="">All pages</option>
+                              {(compiledKps[src.id] ?? []).map((kp) => (
+                                <option key={kp.product_id} value={kp.product_id}>
+                                  {kp.product_name} ({kp.compiled_page_count})
+                                </option>
+                              ))}
+                            </select>
+                            <label className={`flex items-center gap-1.5 text-xs ${!selectedKpId ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+                              <input
+                                type="checkbox"
+                                checked={showNotInKp}
+                                disabled={!selectedKpId}
+                                onChange={(e) => setShowNotInKp(e.target.checked)}
+                                className="rounded"
+                              />
+                              Show pages not in KP
+                            </label>
+                            {selectedKpId && (
+                              <span className="text-xs text-gray-400">
+                                {showNotInKp
+                                  ? `${kpFiltered.length} page${kpFiltered.length !== 1 ? "s" : ""} not in KP`
+                                  : `${kpFiltered.length} page${kpFiltered.length !== 1 ? "s" : ""} compiled`}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="overflow-x-auto">
                           <table className="text-xs" style={{ tableLayout: "fixed", width: Object.values(colWidths).reduce((a, b) => a + b, 0) }}>
                             <colgroup>
                               <col style={{ width: colWidths.cb }} />
                               <col style={{ width: colWidths.title }} />
                               <col style={{ width: colWidths.url }} />
-                              <col style={{ width: colWidths.extraction }} />
+                              <col style={{ width: colWidths.curation }} />
+                              <col style={{ width: colWidths.compiled_kp }} />
                               <col style={{ width: colWidths.fetched }} />
                               <col style={{ width: colWidths.action }} />
                             </colgroup>
                             <thead>
                               {(() => {
                                 const sel = selectedWebPages[src.id];
-                                const allFilteredSucceeded = filteredPages.filter((p) => p.latest_run_status === "succeeded");
-                                const allSelected = allFilteredSucceeded.length > 0 && allFilteredSucceeded.every((p) => sel?.has(p.id));
-                                const someSelected = !allSelected && allFilteredSucceeded.some((p) => sel?.has(p.id));
+                                const allSelected = displayPages.length > 0 && displayPages.every((p) => sel?.has(p.id));
+                                const someSelected = !allSelected && displayPages.some((p) => sel?.has(p.id));
                                 return (
                                   <tr className="bg-gray-50 text-left text-gray-500 select-none">
                                     <th className="px-2 py-2 font-medium text-center" style={{ width: colWidths.cb }}>
@@ -1693,24 +2179,47 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                         onChange={(e) => {
                                           setSelectedWebPages((prev) => {
                                             const cur = new Set(prev[src.id] ?? []);
-                                            if (e.target.checked) allFilteredSucceeded.forEach((p) => cur.add(p.id));
-                                            else allFilteredSucceeded.forEach((p) => cur.delete(p.id));
+                                            if (e.target.checked) displayPages.forEach((p) => cur.add(p.id));
+                                            else displayPages.forEach((p) => cur.delete(p.id));
                                             return { ...prev, [src.id]: cur };
                                           });
                                         }}
                                         className="rounded"
-                                        title="Select all extracted pages"
+                                        title="Select all filtered pages"
                                       />
                                     </th>
-                                    {(["title", "url", "extraction", "fetched"] as const).map((col, i) => (
+                                    {(["title", "url", "curation"] as const).map((col, i) => (
                                       <th key={col} className="px-4 py-2 font-medium relative" style={{ width: colWidths[col] }}>
-                                        {["Title", "URL", "Extraction", "Fetched"][i]}
+                                        <span className="inline-flex items-center gap-1">
+                                          {["Title", "URL", "Curation"][i]}
+                                          {col === "curation" && (
+                                            <button
+                                              onClick={() => setShowLegend((v) => !v)}
+                                              className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold bg-gray-200 text-gray-500 hover:bg-indigo-100 hover:text-indigo-600 leading-none"
+                                              title="Show status legend"
+                                            >?</button>
+                                          )}
+                                        </span>
                                         <span
                                           onMouseDown={(e) => startColResize(col, e)}
                                           className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80"
                                         />
                                       </th>
                                     ))}
+                                    <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.compiled_kp }}>
+                                      Compiled KP
+                                      <span
+                                        onMouseDown={(e) => startColResize("compiled_kp", e)}
+                                        className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80"
+                                      />
+                                    </th>
+                                    <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.fetched }}>
+                                      Fetched
+                                      <span
+                                        onMouseDown={(e) => startColResize("fetched", e)}
+                                        className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80"
+                                      />
+                                    </th>
                                     <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.action }}>
                                       Actions
                                       <span
@@ -1723,9 +2232,9 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                               })()}
                             </thead>
                             <tbody className="divide-y divide-gray-100">
-                              {filteredPages.map((pg) => {
-                                const isExtracting = extractingPages.has(pg.id);
-                                const status = isExtracting ? "running" : pg.latest_run_status;
+                              {displayPages.map((pg) => {
+                                const isCurating = curatingPages.has(pg.id);
+                                const status = isCurating ? "running" : pg.latest_run_status;
                                 const compileStatus = compilePageStatus[src.id]?.[pg.id] ?? null;
                                 const compileBadgeMap: Record<string, string> = {
                                   compiling: "bg-indigo-100 text-indigo-700",
@@ -1739,20 +2248,18 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                   discarded: "Discarded",
                                   failed: "Compile failed",
                                 };
-                                const linksOpen = expandedLinks[pg.id] !== undefined;
-                                const linksLoading = loadingLinks.has(pg.id);
-                                const links = expandedLinks[pg.id] ?? null;
                                 const isSelected = selectedWebPages[src.id]?.has(pg.id) ?? false;
-                                const colSpan = 6; // cb + title + url + extraction + fetched + action
+                                const colSpan = 7; // cb + title + url + curation + compiled_kp + fetched + action
+                                const isChanged = pg.changed_since_extraction;
                                 const rows: React.ReactNode[] = [
-                                  <tr key={`${pg.id}-row`} className={`hover:bg-gray-50 ${isSelected ? "bg-indigo-50/40" : ""}`}>
+                                  <tr key={`${pg.id}-row`} className={`hover:bg-gray-50 ${isSelected ? "bg-indigo-50/40" : isChanged ? "bg-red-50" : ""}`}>
                                     <td className="px-2 py-2 text-center">
                                       <input
                                         type="checkbox"
                                         checked={isSelected}
                                         onChange={() => togglePageSelection(src.id, pg.id, srcPages)}
                                         className="rounded"
-                                        title={pg.latest_run_status === "succeeded" ? "Select for compilation" : "Extract page first to enable compilation"}
+                                        title="Select for curation or compilation"
                                       />
                                     </td>
                                     <td className="px-4 py-2 font-medium text-gray-800 overflow-hidden text-ellipsis whitespace-nowrap" title={pg.title}>
@@ -1766,10 +2273,20 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                     <td className="px-4 py-2 overflow-hidden">
                                       <div className="flex flex-col gap-1">
                                         <div className="flex items-center gap-1.5 flex-wrap">
-                                          {isExtracting && (
+                                          {isCurating && (
                                             <span className="inline-block h-1.5 w-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
                                           )}
-                                          {extractionBadge(status ?? null, pg.latest_run_id, pg.title)}
+                                          {curationBadge(status ?? null, pg.latest_run_id, pg.title)}
+                                          {isChanged && (
+                                            <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700" title="Page content changed since last curation — re-curate and re-compile needed">
+                                              Changed
+                                            </span>
+                                          )}
+                                          {pg.is_thin_content && (
+                                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700" title="Very little text was found — the page may require JavaScript to render.">
+                                              Thin content
+                                            </span>
+                                          )}
                                           {status === "failed" && pg.latest_run_error && (
                                             <span className="text-red-400 truncate text-xs" title={pg.latest_run_error}>
                                               {pg.latest_run_error}
@@ -1797,93 +2314,52 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                         )}
                                       </div>
                                     </td>
+                                    <td className="px-4 py-2" style={{ width: colWidths.compiled_kp }}>
+                                      {pg.compiled_kp_count > 0 ? (
+                                        <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                                          In {pg.compiled_kp_count} KP{pg.compiled_kp_count !== 1 ? "s" : ""}
+                                        </span>
+                                      ) : (
+                                        <span className="text-gray-300 text-xs">—</span>
+                                      )}
+                                      {selectedKpId && (() => {
+                                        const s = (kpStatusMap[src.id] ?? {})[pg.id];
+                                        if (s === "not_relevant") return (
+                                          <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">Not relevant</span>
+                                        );
+                                        if (s === "none") return (
+                                          <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">Not compiled</span>
+                                        );
+                                        return null;
+                                      })()}
+                                    </td>
                                     <td className="px-4 py-2 text-gray-400 whitespace-nowrap overflow-hidden">
                                       {new Date(pg.fetched_at).toLocaleString()}
                                     </td>
                                     <td className="px-4 py-2">
                                       <div className="flex items-center gap-1.5">
                                         <button
-                                          onClick={() => handleToggleLinks(src.id, pg.id)}
-                                          disabled={linksLoading}
-                                          title={linksOpen ? "Hide linked pages" : "Show pages linked from this page"}
-                                          className={`rounded border px-2 py-0.5 text-xs disabled:opacity-40 ${linksOpen ? "border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100" : "border-gray-200 text-gray-600 hover:bg-gray-100"}`}
+                                          onClick={() => handleOpenLinksModal(src.id, pg.id, pg.title)}
+                                          disabled={linksModalLoading && linksModal?.pageId === pg.id}
+                                          title="Show pages linked from this page"
+                                          className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-40"
                                         >
-                                          {linksLoading ? "…" : linksOpen ? "▲ Links" : "Links"}
+                                          {linksModalLoading && linksModal?.pageId === pg.id ? "…" : "Links"}
                                         </button>
                                         {isOwner && (
                                           <button
-                                            onClick={() => handleExtractPage(src.id, pg.id)}
-                                            disabled={isExtracting}
+                                            onClick={() => handleCuratePage(src.id, pg.id, true)}
+                                            disabled={isCurating || crawlPending}
+                                            title={crawlPending ? "Cannot curate while a crawl is running" : undefined}
                                             className="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-40"
                                           >
-                                            {isExtracting ? "…" : status === "succeeded" ? "Re-extract" : "Extract"}
+                                            {isCurating ? "…" : status === "succeeded" ? "Re-curate" : "Curate"}
                                           </button>
                                         )}
                                       </div>
                                     </td>
                                   </tr>,
                                 ];
-                                if (linksOpen && links !== null) rows.push(
-                                    <tr key={`${pg.id}-links`} className="bg-indigo-50/50">
-                                      <td colSpan={colSpan} className="px-6 py-3">
-                                        {links.length === 0 ? (
-                                          <p className="text-xs text-gray-400 italic">No links found. Re-crawl this source to discover links.</p>
-                                        ) : (
-                                          <div className="overflow-x-auto">
-                                            <p className="text-xs font-medium text-gray-500 mb-2">{links.length} link{links.length !== 1 ? "s" : ""} found on this page</p>
-                                            <table className="w-full text-xs border-collapse">
-                                              <thead>
-                                                <tr className="text-left text-gray-400 border-b border-indigo-100">
-                                                  <th className="py-1 pr-3 font-medium">URL</th>
-                                                  <th className="py-1 pr-3 font-medium">Title</th>
-                                                  <th className="py-1 font-medium">Status</th>
-                                                </tr>
-                                              </thead>
-                                              <tbody className="divide-y divide-indigo-100/60">
-                                                {links.map((lnk) => (
-                                                  <tr key={lnk.url} className="hover:bg-indigo-50">
-                                                    <td className="py-1.5 pr-3 max-w-xs overflow-hidden text-ellipsis whitespace-nowrap">
-                                                      <a href={lnk.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline font-mono" title={lnk.url}>
-                                                        {lnk.url}
-                                                      </a>
-                                                    </td>
-                                                    <td className="py-1.5 pr-3 text-gray-600 max-w-xs overflow-hidden text-ellipsis whitespace-nowrap">
-                                                      {lnk.linked_page_title ?? lnk.title ?? <span className="text-gray-300 italic">not crawled</span>}
-                                                    </td>
-                                                    <td className="py-1.5">
-                                                      <div className="flex flex-wrap items-center gap-1">
-                                                        {!lnk.linked_page_id ? (
-                                                          <span className="text-gray-300">Not crawled</span>
-                                                        ) : lnk.linked_page_run_status === "succeeded" ? (
-                                                          <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-green-700 font-medium">Extracted</span>
-                                                        ) : lnk.linked_page_run_status === "failed" ? (
-                                                          <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-red-700 font-medium">Failed</span>
-                                                        ) : lnk.linked_page_run_status === "running" ? (
-                                                          <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-yellow-700 font-medium">
-                                                            <span className="h-1.5 w-1.5 rounded-full bg-yellow-400 animate-pulse inline-block" />Extracting
-                                                          </span>
-                                                        ) : (
-                                                          <span className="text-gray-400">Crawled, not extracted</span>
-                                                        )}
-                                                        {lnk.linked_page_is_compiled && (
-                                                          <span
-                                                            className="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-indigo-700 font-medium"
-                                                            title={lnk.linked_page_compiled_at ? `Compiled ${new Date(lnk.linked_page_compiled_at).toLocaleString()}` : "Compiled"}
-                                                          >
-                                                            Compiled
-                                                          </span>
-                                                        )}
-                                                      </div>
-                                                    </td>
-                                                  </tr>
-                                                ))}
-                                              </tbody>
-                                            </table>
-                                          </div>
-                                        )}
-                                      </td>
-                                    </tr>
-                                );
                                 return rows;
                               })}
                             </tbody>
@@ -1899,7 +2375,30 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
         </div>
       )}
 
-      {/* Structured draft JSON modal */}
+      {/* Link tree modal */}
+      {linksModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setLinksModal(null)}>
+          <div className="relative w-full max-w-2xl max-h-[85vh] rounded-xl bg-white shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <p className="text-sm font-semibold text-gray-900">Page link tree</p>
+                <p className="text-xs text-gray-500 mt-0.5 truncate">{linksModal.pageTitle}</p>
+              </div>
+              <button onClick={() => setLinksModal(null)} className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-5 py-4 text-xs">
+              {linksModalLoading ? (
+                <p className="text-gray-400 animate-pulse">Loading tree…</p>
+              ) : !linksModalData ? (
+                <p className="text-gray-400 italic">Could not load link tree. Re-crawl to populate links.</p>
+              ) : (
+                <LinkTreeSection data={linksModalData} sourceId={linksModal.sourceId} />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {draftModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setDraftModal(null)}>
           <div
@@ -1909,7 +2408,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             {/* Header */}
             <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-gray-200">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-gray-900">Extracted Draft JSON</p>
+                <p className="text-sm font-semibold text-gray-900">Curated Draft JSON</p>
                 <p className="text-xs text-gray-500 mt-0.5 truncate" title={draftModal.title}>{draftModal.title}</p>
                 <p className="text-xs text-gray-400 font-mono mt-0.5">{draftModal.runId}</p>
               </div>

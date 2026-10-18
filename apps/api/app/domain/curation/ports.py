@@ -14,7 +14,7 @@ class ExtractionSchema:
 
 
 @dataclass(frozen=True)
-class ExtractionResult:
+class CurationResult:
     # process_steps: list of dicts with at minimum {"name": str, "description": str}
     # plus optional: responsible_role, inputs, outputs, decision, tools_used
     process_steps: list[dict]
@@ -34,10 +34,10 @@ class ExtractionResult:
     raw_model_output: dict
 
 
-class LLMExtractionPort(Protocol):
+class LLMCurationPort(Protocol):
     """Port implemented per-provider in app/infrastructure/llm/.
     Domain/application code calls this and never imports a provider SDK directly."""
 
-    async def extract(self, raw_text: str, schema: ExtractionSchema) -> ExtractionResult: ...
+    async def extract(self, raw_text: str, schema: ExtractionSchema, *, source_url: str | None = None) -> CurationResult: ...
 
-    async def merge(self, existing: ExtractionResult, incoming: ExtractionResult, schema: ExtractionSchema) -> ExtractionResult: ...
+    async def merge(self, existing: CurationResult, incoming: CurationResult, schema: ExtractionSchema, *, brief: str | None = None) -> tuple[CurationResult, bool]: ...

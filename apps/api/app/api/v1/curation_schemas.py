@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.domain.knowledge_product.value_objects import VersionBump
 
 
-class ExtractionRunResponse(BaseModel):
+class CurationRunResponse(BaseModel):
     id: uuid.UUID
     page_id: uuid.UUID
     status: str
@@ -26,7 +26,7 @@ class CompiledProductSummary(BaseModel):
     semver: str
 
 
-class ExtractionRunWithProductResponse(ExtractionRunResponse):
+class CurationRunWithProductResponse(CurationRunResponse):
     started_at: str | None = None
     compiled_product: CompiledProductSummary | None = None
     compiled_at: str | None = None
@@ -37,7 +37,7 @@ class ExtractionRunWithProductResponse(ExtractionRunResponse):
     prev_compiled_at: str | None = None
 
 
-class CompileFromExtractionRequest(BaseModel):
+class CompileFromCurationRequest(BaseModel):
     product_key: str
     name: str
     owner: str

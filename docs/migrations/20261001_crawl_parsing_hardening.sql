@@ -1,0 +1,2 @@
+ALTER TABLE web_source ADD COLUMN IF NOT EXISTS include_query_strings BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE web_page ADD COLUMN IF NOT EXISTS is_thin_content BOOLEAN NOT NULL DEFAULT false;

@@ -8,7 +8,7 @@ from enum import Enum
 from app.domain.shared.base import Entity
 
 
-class ExtractionStatus(str, Enum):
+class CurationStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
@@ -21,29 +21,29 @@ class PageSourceType(str, Enum):
 
 
 @dataclass
-class ExtractionSession(Entity):
-    """Session-level metadata for an extraction run (provider, model, timing)."""
+class CurationSession(Entity):
+    """Session-level metadata for a curation run (provider, model, timing)."""
     llm_provider: str = ""
     llm_model: str = ""
-    status: ExtractionStatus = ExtractionStatus.PENDING
+    status: CurationStatus = CurationStatus.PENDING
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
 
 @dataclass
-class ExtractionRun(Entity):
+class CurationRun(Entity):
     """
-    Flat projection of extraction_session_entry + extraction_session
+    Flat projection of page_curation_session_entry + page_curation_session
     (+ optional latest compile outcome from compile_session_entry).
     The repository joins the tables so callers always get a single flat object.
     """
     session_id: uuid.UUID | None = None
     page_id: uuid.UUID | None = None
     page_source_type: PageSourceType | None = None
-    status: ExtractionStatus = ExtractionStatus.PENDING
+    status: CurationStatus = CurationStatus.PENDING
     structured_draft: dict | None = None
     error_message: str | None = None
-    # From extraction_session (joined):
+    # From curation_session (joined):
     llm_provider: str = ""
     llm_model: str = ""
     started_at: datetime | None = None

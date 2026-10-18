@@ -6,7 +6,7 @@ from app.infrastructure.llm.openai_adapter import OpenAIExtractionAdapter
 
 
 class AzureOpenAIExtractionAdapter(OpenAIExtractionAdapter):
-    """LLMExtractionPort backed by Azure AI Foundry (Azure OpenAI Service).
+    """LLMCurationPort backed by Azure AI Foundry (Azure OpenAI Service).
 
     Identical to OpenAIExtractionAdapter in behaviour — same tool-calling
     protocol, same prompt templates. The only differences are:

@@ -56,7 +56,7 @@ from app.api.deps import SessionDep
 from app.core.security import CurrentUser, get_current_user, require_roles
 from app.domain.governance.value_objects import Role
 from app.domain.knowledge_product.value_objects import KnowledgeProductStatus
-from app.infrastructure.db.models import CompileSession, CompileSessionEntry
+from app.infrastructure.db.models import KpCompileSession as CompileSession, KpCompileSessionEntry as CompileSessionEntry
 
 router = APIRouter(prefix="/knowledge-products", tags=["knowledge-products"])
 
@@ -164,17 +164,17 @@ async def get_skill_bundles(
                     if isinstance(r, dict) and r.get("responsibilities")
                 ],
                 "rules": [
-                    {"condition": r.get("condition"), "action": r.get("action"), "rationale": r.get("rationale")}
+                    {"condition": r.get("condition"), "action": r.get("action"), "rationale": r.get("rationale"), "sources": r.get("sources") or []}
                     for r in (c.get("rules") or [])
                     if isinstance(r, dict)
                 ],
                 "policies": [
-                    {"condition": p.get("condition"), "action": p.get("action"), "rationale": p.get("rationale")}
+                    {"condition": p.get("condition"), "action": p.get("action"), "rationale": p.get("rationale"), "sources": p.get("sources") or []}
                     for p in (c.get("policies") or [])
                     if isinstance(p, dict)
                 ],
                 "escalations": [
-                    {"trigger": e.get("after") or e.get("trigger"), "escalate_to": e.get("escalate_to"), "action": e.get("action")}
+                    {"trigger": e.get("after") or e.get("trigger"), "escalate_to": e.get("escalate_to"), "action": e.get("action"), "sources": e.get("sources") or []}
                     for e in (c.get("escalations") or [])
                     if isinstance(e, dict)
                 ],
@@ -187,16 +187,17 @@ async def get_skill_bundles(
                         "inputs": s.get("inputs") if isinstance(s, dict) else [],
                         "outputs": s.get("outputs") if isinstance(s, dict) else [],
                         "decision": s.get("decision") if isinstance(s, dict) else None,
+                        "sources": s.get("sources") if isinstance(s, dict) else [],
                     }
                     for s in ((c.get("process") or {}).get("steps") or [])
                 ],
                 "roles": [
-                    {"name": r.get("name") if isinstance(r, dict) else r, "responsibilities": r.get("responsibilities") if isinstance(r, dict) else []}
+                    {"name": r.get("name") if isinstance(r, dict) else r, "responsibilities": r.get("responsibilities") if isinstance(r, dict) else [], "sources": r.get("sources") if isinstance(r, dict) else []}
                     for r in (c.get("roles") or [])
                     if isinstance(r, dict) or isinstance(r, str)
                 ],
                 "tools": [
-                    {"name": t.get("name") if isinstance(t, dict) else t, "purpose": t.get("purpose") if isinstance(t, dict) else None}
+                    {"name": t.get("name") if isinstance(t, dict) else t, "purpose": t.get("purpose") if isinstance(t, dict) else None, "sources": t.get("sources") if isinstance(t, dict) else []}
                     for t in (c.get("tools") or [])
                     if isinstance(t, dict) or isinstance(t, str)
                 ],
@@ -371,7 +372,7 @@ async def get_compiled_pages(
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "pages": [
                 {
-                    "run_id": str(e.entry_id) if e.entry_id else None,
+                    "run_id": str(e.curation_entry_id) if e.curation_entry_id else None,
                     "page_id": str(e.page_id) if e.page_id else None,
                     "title": e.page_title,
                     "status": e.status,

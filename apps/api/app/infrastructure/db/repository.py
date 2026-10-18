@@ -38,10 +38,11 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
                 sequence=i,
                 description=s.get("description", ""),
                 responsible_role=s.get("responsible_role", ""),
-                inputs=tuple(s.get("inputs", [])),
-                outputs=tuple(s.get("outputs", [])),
+                inputs=tuple(s.get("inputs") or []),
+                outputs=tuple(s.get("outputs") or []),
                 decision=s.get("decision"),
-                tools_used=tuple(s.get("tools_used", [])),
+                tools_used=tuple(s.get("tools_used") or []),
+                sources=tuple(s.get("sources") or []),
             ))
 
     # roles: old format = list[str], new format = list[dict]
@@ -51,7 +52,7 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
         if isinstance(r, str):
             roles.append(Role(name=r))
         else:
-            roles.append(Role(name=r.get("name", ""), responsibilities=tuple(r.get("responsibilities", []))))
+            roles.append(Role(name=r.get("name", ""), responsibilities=tuple(r.get("responsibilities") or []), sources=tuple(r.get("sources") or [])))
 
     # tools: old format = list[str], new format = list[dict]
     raw_tools = content.get("tools", [])
@@ -61,7 +62,7 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
             tools.append(ToolReference(key=t, display_name=t))
         else:
             name = t.get("name", "")
-            tools.append(ToolReference(key=name, display_name=name, purpose=t.get("purpose", "")))
+            tools.append(ToolReference(key=name, display_name=name, purpose=t.get("purpose", ""), sources=tuple(t.get("sources") or [])))
 
     return KnowledgeProductVersion(
         id=row.id,
@@ -70,11 +71,11 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
         status=KnowledgeProductStatus(row.status),
         process_steps=process_steps,
         rules=[
-            BusinessRule(condition=r["condition"], action=r["action"], rationale=r.get("rationale", ""))
+            BusinessRule(condition=r["condition"], action=r["action"], rationale=r.get("rationale", ""), sources=tuple(r.get("sources") or []))
             for r in content.get("rules", [])
         ],
         policies=[
-            Policy(condition=p["condition"], action=p["action"], rationale=p.get("rationale", ""))
+            Policy(condition=p["condition"], action=p["action"], rationale=p.get("rationale", ""), sources=tuple(p.get("sources") or []))
             for p in content.get("policies", [])
         ],
         sla=ServiceLevelAgreement(target=sla_content["target"]) if sla_content else None,
@@ -83,6 +84,7 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
                 after=e.get("after", e.get("trigger", "")),
                 escalate_to=e["escalate_to"],
                 action=e.get("action", ""),
+                sources=tuple(e.get("sources") or []),
             )
             for e in content.get("escalations", [])
         ],
@@ -91,6 +93,7 @@ def _version_to_domain(row: KnowledgeProductVersionModel) -> KnowledgeProductVer
         created_by=row.created_by,
         source_extraction_run_id=row.source_extraction_entry_id,
         process_overview=content.get("process_overview") or {},
+        compiled_at=row.compiled_at,
     )
 
 
@@ -211,6 +214,7 @@ class SqlAlchemyKnowledgeProductRepository:
                         yaml_content=content,
                         source_extraction_entry_id=version.source_extraction_run_id,
                         created_by=version.created_by,
+                        compiled_at=utc_now(),
                     )
                 )
             else:

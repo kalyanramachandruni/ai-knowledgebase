@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "runId": "1631aebc-3a7f-45a1-bf5c-5eff8e888f4f",
+  "mode": "init",
+  "phase": "planning",
+  "startedAt": "2026-09-26T20:08:14.029Z",
+  "language": "en",
+  "languageChanged": false,
+  "requiredRewritePages": [],
+  "initialPages": [],
+  "sourceFingerprint": "sha256:f9ae59edbe0cddcded8f4432b2ee3275e7b9701ebfd1ccd12d3723b04ce5696f",
+  "targetGitHead": "11ca506162c7b136556cecc28783e55ae5a47c3a",
+  "actor": {
+    "producerActor": "openwiki/0.6.0",
+    "metadataModel": "gpt-5.5"
+  },
+  "previousLastUpdate": null,
+  "wikiGoal": "A code wiki for this repository.",
+  "beforeContentSnapshot": "632cf2073a36a4ef01dcd33b2a7a2d55b75afc69f961e55e70fa14a5e236f881",
+  "preparedWiki": {
+    "generatedProvenance": []
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TABLE web_source ADD COLUMN IF NOT EXISTS crawl_depth INTEGER;

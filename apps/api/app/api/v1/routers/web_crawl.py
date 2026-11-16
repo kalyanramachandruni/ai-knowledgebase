@@ -89,6 +89,20 @@ class WebPageResponse(BaseModel):
     changed_since_extraction: bool = False
     is_thin_content: bool = False
     compiled_kp_count: int = 0
+    embedding_status: str = "none"  # ready | stale | pending | none
+
+
+class PageRelevanceScore(BaseModel):
+    page_id: str
+    title: str
+    url: str
+    similarity: float | None  # cosine similarity 0–1; None if page has no embedding
+    has_embedding: bool
+
+
+class GenerateKpEmbeddingRequest(BaseModel):
+    product_id: str
+    brief: str | None = None
 
 
 class CompiledKpSummary(BaseModel):
@@ -316,6 +330,25 @@ async def list_web_pages(
         )
         compiled_kp_counts = {row.page_id: row.kp_count for row in kp_counts_result}
 
+    # Fetch embedding status per page
+    from app.infrastructure.db.models import WebPageEmbedding as WebPageEmbeddingModel
+    embedding_status_map: dict[uuid.UUID, str] = {}
+    if page_ids:
+        emb_rows = (await session.execute(
+            select(WebPageEmbeddingModel.page_id, WebPageEmbeddingModel.content_hash)
+            .where(WebPageEmbeddingModel.page_id.in_(page_ids))
+        )).all()
+        emb_map = {r.page_id: r.content_hash for r in emb_rows}
+        for p in rows:
+            if p.is_thin_content or not p.plain_text:
+                embedding_status_map[p.id] = "none"
+            elif p.id not in emb_map:
+                embedding_status_map[p.id] = "pending"
+            elif emb_map[p.id] != (p.content_hash or ""):
+                embedding_status_map[p.id] = "stale"
+            else:
+                embedding_status_map[p.id] = "ready"
+
     return [
         WebPageResponse(
             id=str(p.id),
@@ -334,6 +367,7 @@ async def list_web_pages(
             changed_since_extraction=p.changed_since_extraction,
             is_thin_content=p.is_thin_content,
             compiled_kp_count=compiled_kp_counts.get(p.id, 0),
+            embedding_status=embedding_status_map.get(p.id, "none"),
         )
         for p in rows
     ]
@@ -475,6 +509,215 @@ async def get_pages_kp_status(
         )
         for pid in all_page_ids
     ]
+
+
+class PageCompiledKp(BaseModel):
+    page_id: str
+    kp_key: str
+    kp_name: str
+
+
+@router.get("/{source_id}/pages/compiled-kp-names")
+async def get_page_compiled_kp_names(
+    source_id: uuid.UUID,
+    session: SessionDep,
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
+) -> list[PageCompiledKp]:
+    """Return all (page_id, kp_key, kp_name) pairs for pages in this source that have been compiled into any KP."""
+    from app.infrastructure.db.models import (
+        KpCompileSession,
+        KpCompileSessionEntry,
+        WebPage as WebPageModel,
+        KnowledgeProductModel as KPModel,
+    )
+
+    rows = (await session.execute(
+        select(
+            KpCompileSessionEntry.page_id,
+            KPModel.product_key,
+            KPModel.name,
+        )
+        .join(KpCompileSession, KpCompileSession.id == KpCompileSessionEntry.session_id)
+        .join(KPModel, KPModel.id == KpCompileSession.knowledge_product_id)
+        .join(WebPageModel, WebPageModel.id == KpCompileSessionEntry.page_id)
+        .where(
+            WebPageModel.source_id == source_id,
+            KpCompileSessionEntry.status == "compiled",
+        )
+        .distinct()
+    )).all()
+
+    return [
+        PageCompiledKp(page_id=str(r.page_id), kp_key=r.product_key, kp_name=r.name)
+        for r in rows
+    ]
+
+
+@router.get("/{source_id}/pages/relevance")
+async def get_pages_relevance(
+    source_id: uuid.UUID,
+    product_id: uuid.UUID,
+    session: SessionDep,
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
+) -> list[PageRelevanceScore]:
+    """Return cosine similarity of every embedded page in the source against the KP's intent embedding."""
+    from app.infrastructure.db.models import (
+        KnowledgeProductEmbedding as KPEmbeddingModel,
+    )
+
+    kp_emb_row = (await session.execute(
+        select(KPEmbeddingModel).where(KPEmbeddingModel.product_id == product_id)
+    )).scalar_one_or_none()
+
+    if kp_emb_row is None or not kp_emb_row.embedding:
+        raise HTTPException(
+            status_code=422,
+            detail="No KP embedding found — call POST /pages/relevance/generate-kp-embedding first",
+        )
+
+    emb_str = "[" + ",".join(f"{float(x):.8g}" for x in kp_emb_row.embedding) + "]"
+
+    rows = (await session.execute(text("""
+        SELECT
+            wp.id                                                          AS page_id,
+            wp.title                                                       AS title,
+            wp.url                                                         AS url,
+            MAX(1.0 - (wpe.embedding <=> CAST(:kp_emb AS vector(1024))))  AS similarity,
+            COUNT(wpe.id) > 0                                              AS has_embedding
+        FROM web_page wp
+        LEFT JOIN web_page_embedding wpe ON wpe.page_id = wp.id
+        WHERE wp.source_id = CAST(:source_id AS uuid)
+        GROUP BY wp.id, wp.title, wp.url
+        ORDER BY
+            (COUNT(wpe.id) > 0) DESC,
+            MAX(wpe.embedding <=> CAST(:kp_emb AS vector(1024))) ASC
+    """), {"source_id": str(source_id), "kp_emb": emb_str})).mappings().all()
+
+    return [
+        PageRelevanceScore(
+            page_id=str(r["page_id"]),
+            title=r["title"],
+            url=r["url"],
+            similarity=float(r["similarity"]) if r["similarity"] is not None else None,
+            has_embedding=bool(r["has_embedding"]),
+        )
+        for r in rows
+    ]
+
+
+class ScoreByBriefRequest(BaseModel):
+    brief: str
+
+
+@router.post("/{source_id}/pages/relevance/score-by-brief")
+async def score_pages_by_brief(
+    source_id: uuid.UUID,
+    payload: ScoreByBriefRequest,
+    session: SessionDep,
+    _current_user: Annotated[CurrentUser, Depends(_ANY_ROLE)],
+) -> list[PageRelevanceScore]:
+    """Embed a brief on the fly and return max-chunk cosine similarity for every page in the source.
+    No KP product_id needed — works for new KPs that haven't been compiled yet."""
+    from app.infrastructure.llm.factory import get_llm_curation_port as _get_port
+
+    llm_port = _get_port()
+    [brief_emb] = await llm_port.embed([payload.brief.strip()])
+    emb_str = "[" + ",".join(f"{float(x):.8g}" for x in brief_emb) + "]"
+
+    rows = (await session.execute(text("""
+        SELECT
+            wp.id                                                          AS page_id,
+            wp.title                                                       AS title,
+            wp.url                                                         AS url,
+            MAX(1.0 - (wpe.embedding <=> CAST(:kp_emb AS vector(1024))))  AS similarity,
+            COUNT(wpe.id) > 0                                              AS has_embedding
+        FROM web_page wp
+        LEFT JOIN web_page_embedding wpe ON wpe.page_id = wp.id
+        WHERE wp.source_id = CAST(:source_id AS uuid)
+        GROUP BY wp.id, wp.title, wp.url
+        ORDER BY
+            (COUNT(wpe.id) > 0) DESC,
+            MAX(wpe.embedding <=> CAST(:kp_emb AS vector(1024))) ASC
+    """), {"source_id": str(source_id), "kp_emb": emb_str})).mappings().all()
+
+    return [
+        PageRelevanceScore(
+            page_id=str(r["page_id"]),
+            title=r["title"],
+            url=r["url"],
+            similarity=float(r["similarity"]) if r["similarity"] is not None else None,
+            has_embedding=bool(r["has_embedding"]),
+        )
+        for r in rows
+    ]
+
+
+@router.post("/{source_id}/pages/relevance/generate-kp-embedding")
+async def generate_kp_embedding(
+    source_id: uuid.UUID,
+    payload: GenerateKpEmbeddingRequest,
+    session: SessionDep,
+    _current_user: Annotated[CurrentUser, Depends(_OWNER_OR_ADMIN)],
+) -> dict:
+    """(Re)generate the KP intent embedding on demand — called before a relevance query."""
+    import hashlib
+
+    from app.api.deps import get_llm_port
+    from app.infrastructure.db.models import (
+        KnowledgeProductModel as KPModel,
+        KnowledgeProductVersionModel as KPVersionModel,
+        KnowledgeProductEmbedding as KPEmbeddingModel,
+    )
+    from app.infrastructure.llm.factory import get_embedding_model_name
+
+    product_id = uuid.UUID(payload.product_id)
+    kp = (await session.execute(
+        select(KPModel).where(KPModel.id == product_id)
+    )).scalar_one_or_none()
+    if kp is None:
+        raise HTTPException(status_code=404, detail="Knowledge product not found")
+
+    # Build intent text from KP name + current version summary + optional brief
+    kp_version = (await session.execute(
+        select(KPVersionModel)
+        .where(KPVersionModel.product_id == product_id)
+        .order_by(KPVersionModel.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+
+    parts = [kp.name]
+    if kp_version and kp_version.yaml_content:
+        summary = (kp_version.yaml_content.get("process_overview") or {}).get("summary", "")
+        if summary:
+            parts.append(summary)
+    if payload.brief:
+        parts.append(payload.brief)
+    intent_text = "\n".join(parts)
+    intent_hash = hashlib.sha256(intent_text.encode()).hexdigest()
+
+    llm_port = get_llm_port()
+    embeddings = await llm_port.embed([intent_text])
+    emb = embeddings[0]
+    emb_str = "[" + ",".join(f"{float(x):.8g}" for x in emb) + "]"
+    model_name = get_embedding_model_name()
+
+    await session.execute(text("""
+        INSERT INTO knowledge_product_embedding (id, product_id, intent_hash, model, embedding, created_at)
+        VALUES (gen_random_uuid(), CAST(:product_id AS uuid), :intent_hash, :model, CAST(:embedding AS vector(1024)), now())
+        ON CONFLICT (product_id) DO UPDATE SET
+            intent_hash = EXCLUDED.intent_hash,
+            model       = EXCLUDED.model,
+            embedding   = EXCLUDED.embedding,
+            created_at  = now()
+    """), {
+        "product_id": str(product_id),
+        "intent_hash": intent_hash,
+        "model": model_name,
+        "embedding": emb_str,
+    })
+    await session.commit()
+
+    return {"status": "ok", "product_id": str(product_id), "model": model_name}
 
 
 @router.post("/{source_id}/crawl")

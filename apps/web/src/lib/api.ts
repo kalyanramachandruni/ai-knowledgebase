@@ -6,6 +6,7 @@ import type {
   KnowledgeProduct,
   KnowledgeProductSummary,
   CompiledPageSession,
+  CompileSessionDetail,
   VersionDiff,
   WebSource,
   WebPage,
@@ -85,6 +86,9 @@ export const api = {
 
   getCompiledPages: (productId: string, versionId: string) =>
     request<CompiledPageSession[]>(`/knowledge-products/${productId}/versions/${versionId}/compiled-pages`),
+
+  getLatestCompileSession: (productId: string) =>
+    request<CompileSessionDetail | null>(`/knowledge-products/${productId}/latest-compile-session`),
 
   submitForReview: (productId: string, versionId: string, actorId: string) =>
     request<KnowledgeProduct>(
@@ -289,5 +293,27 @@ export const api = {
   getKpPageStatus: (sourceId: string, productId: string) =>
     request<import("@/lib/types").PageKpStatus[]>(
       `/web-sources/${sourceId}/pages/kp-status?product_id=${productId}`
+    ),
+
+  getPageCompiledKpNames: (sourceId: string) =>
+    request<import("@/lib/types").PageCompiledKp[]>(
+      `/web-sources/${sourceId}/pages/compiled-kp-names`
+    ),
+
+  getPageRelevance: (sourceId: string, productId: string) =>
+    request<import("@/lib/types").PageRelevanceScore[]>(
+      `/web-sources/${sourceId}/pages/relevance?product_id=${productId}`
+    ),
+
+  generateKpEmbedding: (sourceId: string, productId: string, brief?: string) =>
+    request<{ status: string; product_id: string; model: string }>(
+      `/web-sources/${sourceId}/pages/relevance/generate-kp-embedding`,
+      { method: "POST", body: JSON.stringify({ product_id: productId, brief: brief ?? null }) }
+    ),
+
+  scorePagesByBrief: (sourceId: string, brief: string) =>
+    request<import("@/lib/types").PageRelevanceScore[]>(
+      `/web-sources/${sourceId}/pages/relevance/score-by-brief`,
+      { method: "POST", body: JSON.stringify({ brief }) }
     ),
 };

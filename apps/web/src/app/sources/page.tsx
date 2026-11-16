@@ -15,7 +15,7 @@ interface SyncResult {
 }
 
 type Tab = "connect" | "pages" | "web";
-type PageStatus = "idle" | "curating" | "curated" | "reused" | "compiling" | "compiled" | "failed" | "discarded";
+type PageStatus = "idle" | "curating" | "curated" | "reused" | "compiling" | "compiled" | "failed" | "discarded" | "not_relevant";
 
 function StatusBadge({ status, isCompiled }: { status: LinkTreeNode["run_status"]; isCompiled: boolean }) {
   return (
@@ -1062,33 +1062,35 @@ type CrawlEvent =
   | { type: "done"; created: number; updated: number; skipped: number }
   | { type: "error"; message: string };
 
-type FilterField = "url" | "title" | "fetched" | "tags";
+type FilterField = "url" | "title" | "compiled_kp" | "tags";
 type FilterConnector = "AND" | "OR";
 type FilterRow = { field: FilterField; pattern: string; connector: FilterConnector };
 
 const DEFAULT_FILTER_ROW: FilterRow = { field: "url", pattern: "", connector: "AND" };
 
-function applyPageFilters(pages: import("@/lib/types").WebPage[], rows: FilterRow[]): import("@/lib/types").WebPage[] {
+function applyPageFilters(pages: import("@/lib/types").WebPage[], rows: FilterRow[], kpNames?: Record<string, string>): import("@/lib/types").WebPage[] {
   const active = rows.filter((r) => r.pattern.trim());
   if (!active.length) return pages;
   return pages.filter((pg) => {
-    let result = matchFilterRow(pg, active[0]);
+    let result = matchFilterRow(pg, active[0], kpNames);
     for (let i = 1; i < active.length; i++) {
       result = active[i].connector === "AND"
-        ? result && matchFilterRow(pg, active[i])
-        : result || matchFilterRow(pg, active[i]);
+        ? result && matchFilterRow(pg, active[i], kpNames)
+        : result || matchFilterRow(pg, active[i], kpNames);
     }
     return result;
   });
 }
 
-function matchFilterRow(pg: import("@/lib/types").WebPage, row: FilterRow): boolean {
+function matchFilterRow(pg: import("@/lib/types").WebPage, row: FilterRow, kpNames?: Record<string, string>): boolean {
   let re: RegExp;
   try { re = new RegExp(row.pattern, "i"); } catch { return false; }
   if (row.field === "url") return re.test(pg.url);
   if (row.field === "title") return re.test(pg.title);
   if (row.field === "tags") return (pg.page_tags ?? []).some((t) => re.test(t));
-  return re.test(pg.fetched_at);
+  // compiled_kp: test against resolved KP name/key if available, else latest_compile_status
+  const kpStr = kpNames?.[pg.id] ?? pg.latest_compile_status ?? "";
+  return re.test(kpStr);
 }
 
 function WebWikisTab({ isOwner }: { isOwner: boolean }) {
@@ -1106,16 +1108,25 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
   const [pageFilters, setPageFilters] = useState<Record<string, FilterRow[]>>({});
   const [curationStatusFilter, setCurationStatusFilter] = useState<Record<string, string[]>>({});
   const [colWidths, setColWidths] = useState({ cb: 36, title: 260, url: 420, curation: 200, compiled_kp: 110, fetched: 170, action: 140 });
-  const [selectedKpId, setSelectedKpId] = useState<string | null>(null);
-  const [showNotInKp, setShowNotInKp] = useState(false);
   const [compiledKps, setCompiledKps] = useState<Record<string, import("@/lib/types").CompiledKpSummary[]>>({});
-  const [kpStatusMap, setKpStatusMap] = useState<Record<string, Record<string, "compiled" | "not_relevant" | "none">>>({});
+  const [productIndex, setProductIndex] = useState<Record<string, { name: string; owner: string; id: string }>>({});
+  const [selectedKpStatus, setSelectedKpStatus] = useState<Record<string, Record<string, "compiled" | "not_relevant" | "none">>>({});
+  const [pageKpNames, setPageKpNames] = useState<Record<string, Record<string, string>>>({});
   const [showLegend, setShowLegend] = useState(false);
+  const [relevanceScores, setRelevanceScores] = useState<Record<string, import("@/lib/types").PageRelevanceScore[]>>({});
+  const [fetchingRelevance, setFetchingRelevance] = useState<string | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState<Record<string, boolean>>({});
   const [compileForm, setCompileForm] = useState<Record<string, { productKey: string; name: string; owner: string; brief: string } | null>>({});
+  const [pageScoreBuckets, setPageScoreBuckets] = useState<Record<string, Set<number>>>({});
+  const [filterMode, setFilterMode] = useState<Record<string, "percentile" | "absolute">>({});
   const [compiling, setCompiling] = useState<Record<string, boolean>>({});
   const [compiledKp, setCompiledKp] = useState<Record<string, { id: string; name: string; semver: string } | null>>({});
-  const [compilePageStatus, setCompilePageStatus] = useState<Record<string, Record<string, "compiling" | "compiled" | "discarded" | "failed">>>({});
+  const [compilePageStatus, setCompilePageStatus] = useState<Record<string, Record<string, "compiling" | "compiled" | "discarded" | "failed" | "not_relevant">>>({});
   const [compileProgress, setCompileProgress] = useState<Record<string, { done: number; total: number }>>({});
+  const [compileFilterStats, setCompileFilterStats] = useState<Record<string, { filtered: number; noEmbedding: number; remaining: number; warning?: string } | null>>({});
+  const [hideVectorFiltered, setHideVectorFiltered] = useState<Record<string, boolean>>({});
+  const [compileScoredApplied, setCompileScoredApplied] = useState<Record<string, boolean>>({});
+  const [showOnlySelected, setShowOnlySelected] = useState<Record<string, boolean>>({});
   const [draftModal, setDraftModal] = useState<{ runId: string; title: string } | null>(null);
   const [draftJson, setDraftJson] = useState<Record<string, unknown> | null>(null);
   const [draftLoading, setDraftLoading] = useState(false);
@@ -1144,18 +1155,12 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
 
   useEffect(() => {
     api.listWebSources().then(setSources).catch(() => {});
+    api.listProducts().then((products) => {
+      const idx: Record<string, { name: string; owner: string; id: string }> = {};
+      products.forEach((p) => { idx[p.product_key] = { name: p.name, owner: p.owner, id: p.id }; });
+      setProductIndex(idx);
+    }).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (!selectedKpId || !expandedSource) return;
-    api.getKpPageStatus(expandedSource, selectedKpId)
-      .then((rows) => {
-        const map: Record<string, "compiled" | "not_relevant" | "none"> = {};
-        rows.forEach((r) => { map[r.page_id] = r.status; });
-        setKpStatusMap((prev) => ({ ...prev, [expandedSource]: map }));
-      })
-      .catch(() => {});
-  }, [selectedKpId, expandedSource]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -1236,10 +1241,8 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
           setCurrentUrl("");
           const updated = await api.listWebSources().catch(() => sources);
           setSources(updated);
-          if (expandedSource === source.id) {
-            const pg = await api.listWebPages(source.id).catch(() => []);
-            setPages((p) => ({ ...p, [source.id]: pg }));
-          }
+          const pg = await api.listWebPages(source.id).catch(() => []);
+          setPages((p) => ({ ...p, [source.id]: pg }));
           break outer;
         } else if (ev.type === "error") {
           setError(ev.message);
@@ -1263,6 +1266,15 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     }
     const kps = await api.getCompiledKps(sourceId).catch(() => []);
     setCompiledKps((prev) => ({ ...prev, [sourceId]: kps }));
+    api.getPageCompiledKpNames(sourceId).then((entries) => {
+      const map: Record<string, string> = {};
+      entries.forEach((e) => {
+        const existing = map[e.page_id];
+        const val = `${e.kp_name} ${e.kp_key}`;
+        map[e.page_id] = existing ? `${existing} | ${val}` : val;
+      });
+      setPageKpNames((prev) => ({ ...prev, [sourceId]: map }));
+    }).catch(() => {});
   }
 
   async function handleViewDraft(runId: string, title: string) {
@@ -1378,6 +1390,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
     setCompiling((c) => ({ ...c, [sourceId]: true }));
     setCompilePageStatus((s) => ({ ...s, [sourceId]: {} }));
     setCompileProgress((p) => ({ ...p, [sourceId]: { done: 0, total: pageIds.length } }));
+    setCompileFilterStats((s) => ({ ...s, [sourceId]: null }));
     setError(null);
 
     const token = getToken();
@@ -1417,6 +1430,13 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
           const pageId = typeof ev.page_id === "string" ? ev.page_id : null;
           if (ev.type === "start" && typeof ev.total === "number") {
             setCompileProgress((p) => ({ ...p, [sourceId]: { done: 0, total: ev.total as number } }));
+          } else if (ev.type === "filter_stats") {
+            setCompileFilterStats((s) => ({ ...s, [sourceId]: {
+              filtered: (ev.filtered as number) ?? 0,
+              noEmbedding: (ev.no_embedding as number) ?? 0,
+              remaining: (ev.remaining as number) ?? 0,
+              warning: ev.warning as string | undefined,
+            }}));
           } else if (ev.type === "merging" && pageId) {
             setCompilePageStatus((s) => ({ ...s, [sourceId]: { ...s[sourceId], [pageId]: "compiling" } }));
           } else if (ev.type === "discarded" && pageId) {
@@ -1426,12 +1446,16 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             const st = ev.type === "page_compiled" ? "compiled" : "failed";
             setCompilePageStatus((s) => ({ ...s, [sourceId]: { ...s[sourceId], [pageId]: st } }));
             setCompileProgress((p) => ({ ...p, [sourceId]: { ...p[sourceId], done: (p[sourceId]?.done ?? 0) + 1 } }));
+          } else if (ev.type === "page_not_relevant" && pageId) {
+            setCompilePageStatus((s) => ({ ...s, [sourceId]: { ...s[sourceId], [pageId]: "not_relevant" } }));
+            setCompileProgress((p) => ({ ...p, [sourceId]: { ...p[sourceId], done: (p[sourceId]?.done ?? 0) + 1 } }));
           } else if (ev.type === "page_error" && pageId) {
             setCompilePageStatus((s) => ({ ...s, [sourceId]: { ...s[sourceId], [pageId]: "failed" } }));
             setCompileProgress((p) => ({ ...p, [sourceId]: { ...p[sourceId], done: (p[sourceId]?.done ?? 0) + 1 } }));
           } else if (ev.type === "done") {
             setCompiledKp((c) => ({ ...c, [sourceId]: { id: ev.product_id as string, name: ev.name as string, semver: ev.semver as string } }));
             setCompileForm((f) => ({ ...f, [sourceId]: null }));
+            setCompileScoredApplied((prev) => ({ ...prev, [sourceId]: false }));
             // Snap done to total so progress always shows 100% on completion
             setCompileProgress((p) => ({ ...p, [sourceId]: { ...p[sourceId], done: p[sourceId]?.total ?? p[sourceId]?.done ?? 0 } }));
             // Refresh compiled KPs list
@@ -1651,7 +1675,8 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             const srcPages = pages[src.id] ?? [];
             const filterRows = pageFilters[src.id] ?? [DEFAULT_FILTER_ROW];
             const selectedStatuses = curationStatusFilter[src.id] ?? [];
-            const filteredPages = applyPageFilters(srcPages, filterRows).filter((pg) => {
+            const kpNames = pageKpNames[src.id] ?? {};
+            const filteredPages = applyPageFilters(srcPages, filterRows, kpNames).filter((pg) => {
               if (!selectedStatuses.length) return true;
               return selectedStatuses.some((s) => {
                 if (s === "not_curated") return !pg.latest_run_status;
@@ -1665,20 +1690,14 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
             });
             const hasFilter = filterRows.some((r) => r.pattern.trim()) || selectedStatuses.length > 0;
 
-            // KP filter
-            const statusMap = kpStatusMap[src.id] ?? {};
-            let kpFiltered = filteredPages;
-            if (selectedKpId) {
-              if (showNotInKp) {
-                kpFiltered = filteredPages.filter((pg) => {
-                  const s = statusMap[pg.id] ?? "none";
-                  return s === "not_relevant" || s === "none";
-                });
-              } else {
-                kpFiltered = filteredPages.filter((pg) => statusMap[pg.id] === "compiled");
-              }
-            }
-            const displayPages = kpFiltered;
+            const selSet = selectedWebPages[src.id];
+            const afterVectorFilter = hideVectorFiltered[src.id]
+              ? filteredPages.filter((pg) => compilePageStatus[src.id]?.[pg.id] !== "not_relevant")
+              : filteredPages;
+            const displayPages = showOnlySelected[src.id] && selSet && selSet.size > 0
+              ? afterVectorFilter.filter((pg) => selSet.has(pg.id))
+              : afterVectorFilter;
+            const srcForm = compileForm[src.id] ?? null;
 
             function setRows(updater: (rows: FilterRow[]) => FilterRow[]) {
               setPageFilters((f) => ({ ...f, [src.id]: updater(f[src.id] ?? [DEFAULT_FILTER_ROW]) }));
@@ -1759,6 +1778,19 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                         >
                           {isCrawling ? "Crawling…" : "Crawl"}
                         </button>
+                        {(() => {
+                          const pendingPages = srcPages.filter((p) => !p.latest_run_status || p.latest_run_status === "failed");
+                          return (
+                            <button
+                              onClick={() => handleCurateAll(src.id, pendingPages)}
+                              disabled={curatingAll === src.id || pendingPages.length === 0 || isCrawling || crawlPending}
+                              title={isCrawling || crawlPending ? "Cannot curate while a crawl is running" : undefined}
+                              className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              {curatingAll === src.id ? "Curating…" : `Curate${pendingPages.length > 0 ? ` (${pendingPages.length})` : ""}`}
+                            </button>
+                          );
+                        })()}
                         <button
                           onClick={() => handleDelete(src.id)}
                           className="rounded border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
@@ -1814,84 +1846,6 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                       <p className="px-5 py-3 text-xs text-gray-400 italic">No pages crawled yet. Click "Crawl" to start.</p>
                     ) : (
                       <>
-                        {/* Filter bar */}
-                        <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 space-y-1.5">
-                          {/* Curation status multi-select filter */}
-                          <div className="flex items-center gap-1.5">
-                            <StatusMultiSelect
-                              pages={srcPages}
-                              selected={selectedStatuses}
-                              onChange={(next) => setCurationStatusFilter((f) => ({ ...f, [src.id]: next }))}
-                            />
-                          </div>
-                          <div className="border-t border-gray-200" />
-                          {(filterRows.length ? filterRows : []).map((row, i) => {
-                            let rowInvalid = false;
-                            if (row.pattern.trim()) {
-                              try { new RegExp(row.pattern, "i"); } catch { rowInvalid = true; }
-                            }
-                            return (
-                              <div key={i} className="space-y-1">
-                                {i > 0 && (
-                                  <div className="flex items-center gap-1 pl-1">
-                                    {(["AND", "OR"] as FilterConnector[]).map((op) => (
-                                      <button
-                                        key={op}
-                                        onClick={() => setRows((rows) => rows.map((r, idx) => idx === i ? { ...r, connector: op } : r))}
-                                        className={`px-2 py-0.5 rounded text-xs font-mono font-semibold border transition-colors ${row.connector === op ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-300 hover:border-indigo-400"}`}
-                                      >
-                                        {op}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className="flex items-center gap-1.5">
-                                  <select
-                                    value={row.field}
-                                    onChange={(e) => setRows((rows) => rows.map((r, idx) => idx === i ? { ...r, field: e.target.value as FilterField } : r))}
-                                    className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 bg-white shrink-0"
-                                  >
-                                    <option value="url">URL</option>
-                                    <option value="title">Title</option>
-                                    <option value="fetched">Fetched</option>
-                                    <option value="tags">Tags</option>
-                                  </select>
-                                  <div className="relative flex-1">
-                                    <input
-                                      value={row.pattern}
-                                      onChange={(e) => setRows((rows) => rows.map((r, idx) => idx === i ? { ...r, pattern: e.target.value } : r))}
-                                      placeholder="regex pattern, e.g. /en/ or ^https://wiki"
-                                      className={`w-full rounded border px-3 py-1 text-xs font-mono ${rowInvalid ? "border-red-400 bg-red-50" : "border-gray-300"}`}
-                                    />
-                                    {rowInvalid && (
-                                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-red-500">invalid regex</span>
-                                    )}
-                                  </div>
-                                  {filterRows.length > 0 && (
-                                    <button
-                                      onClick={() => removeRow(i)}
-                                      className="shrink-0 text-gray-400 hover:text-red-500 text-sm leading-none px-1"
-                                      title="Remove filter"
-                                    >×</button>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                          <div className="flex items-center gap-3 pt-0.5">
-                            <button
-                              onClick={addRow}
-                              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
-                            >+ Add filter</button>
-                            {hasFilter && (
-                              <>
-                                <span className="text-xs text-gray-500">{filteredPages.length} of {srcPages.length} match</span>
-                                <button onClick={clearFilters} className="text-xs text-gray-400 hover:text-gray-600">Clear</button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-
                         {/* Action bar */}
                         {isOwner && (() => {
                           const sel = selectedWebPages[src.id];
@@ -1902,8 +1856,6 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                           const pendingInSelection = selSize > 0
                             ? filteredPages.filter((p) => sel!.has(p.id) && (!p.latest_run_status || p.latest_run_status === "failed"))
                             : [];
-                          const curateTarget = selSize > 0 ? pendingInSelection : allFilteredPending;
-                          const curateCount = curateTarget.length;
                           // Succeeded within selection
                           const selSucceededCount = selSize > 0
                             ? filteredPages.filter((p) => sel!.has(p.id) && p.latest_run_status === "succeeded").length
@@ -1919,6 +1871,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                             ? `${failedPages.length} page${failedPages.length !== 1 ? "s" : ""} have failed curation — fix before compiling`
                             : undefined;
                           return (
+                            <>
                             <div className="border-b border-gray-200 bg-gray-50">
                               <div className="flex items-center justify-between px-4 py-2">
                                 <div className="flex items-center gap-3">
@@ -1940,43 +1893,77 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                   )}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => handleCurateAll(src.id, curateTarget)}
-                                    disabled={curatingAll === src.id || curateCount === 0 || crawlPending}
-                                    title={crawlPending ? "Cannot curate while a crawl is running" : undefined}
-                                    className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
-                                  >
-                                    {curatingAll === src.id ? "Curating…" : selSize > 0 ? `Curate ${curateCount} selected` : `Curate ${curateCount} pending`}
-                                  </button>
-                                  <button
-                                    onClick={() => setCompileForm((f) => ({ ...f, [src.id]: f[src.id] ? null : { productKey: "", name: src.name, owner: user?.display_name ?? "", brief: "" } }))}
-                                    disabled={compileCount === 0 || compileBlocked}
-                                    title={compileBlockReason}
-                                    className={`rounded px-3 py-1 text-xs font-medium text-white disabled:opacity-40 ${selSize > 0 ? "bg-indigo-700 hover:bg-indigo-800" : "bg-indigo-600 hover:bg-indigo-700"}`}
-                                  >
-                                    {selSize > 0 ? `Compile ${compileCount} selected → KP` : `Compile ${compileCount} → KP`}
-                                  </button>
                                   {compileBlocked && (
                                     <span className="text-xs text-red-600" title={compileBlockReason}>
                                       {failedPages.length} failed
                                     </span>
                                   )}
+                                  <button
+                                    onClick={() => {
+                                      const isOpen = !!(filtersOpen[src.id]);
+                                      setFiltersOpen((f) => ({ ...f, [src.id]: !isOpen }));
+                                      if (!isOpen && !compileForm[src.id]) {
+                                        setCompileForm((f) => ({ ...f, [src.id]: { productKey: "", name: "", owner: user?.display_name ?? "", brief: "" } }));
+                                      }
+                                    }}
+                                    className="rounded border border-gray-300 bg-white px-3 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                                  >
+                                    {filtersOpen[src.id] ? "Filters ▲" : "Filters & Compile ▼"}
+                                  </button>
                                 </div>
                               </div>
+                            </div>
 
-                              {/* Compile form */}
-                              {form && (
-                                <div className="px-4 pb-3 space-y-2 border-t border-gray-200 pt-2">
+                            {/* Collapsible filter + compile panel */}
+                            {filtersOpen[src.id] && (
+                              <div className="border-b border-gray-200 bg-white">
+                                {/* Compile form */}
+                                {form && (
+                                <div className="px-4 pb-3 space-y-2 pt-3">
                                   <p className="text-xs font-medium text-gray-700">Compile {compileCount} page{compileCount !== 1 ? "s" : ""} into a Knowledge Product{selSize > 0 ? " (selected)" : ""}</p>
                                   <div className="flex items-end gap-2 flex-wrap">
                                     <div>
                                       <label className="block text-xs text-gray-500 mb-0.5">Product Key</label>
                                       <input
                                         value={form.productKey}
-                                        onChange={(e) => setCompileForm((f) => ({ ...f, [src.id]: { ...f[src.id]!, productKey: e.target.value } }))}
+                                        list={`kp-keys-${src.id}`}
+                                        onChange={(e) => {
+                                          const key = e.target.value;
+                                          const existing = productIndex[key.trim()];
+                                          setCompileForm((f) => ({
+                                            ...f,
+                                            [src.id]: {
+                                              ...f[src.id]!,
+                                              productKey: key,
+                                              ...(existing ? { name: existing.name, owner: existing.owner } : {}),
+                                            },
+                                          }));
+                                          if (existing) {
+                                            api.getKpPageStatus(src.id, existing.id).then((statuses) => {
+                                              const map: Record<string, "compiled" | "not_relevant" | "none"> = {};
+                                              statuses.forEach((s) => { map[s.page_id] = s.status; });
+                                              setSelectedKpStatus((prev) => ({ ...prev, [src.id]: map }));
+                                            }).catch(() => {});
+                                            api.getLatestCompileSession(existing.id).then((cs) => {
+                                              if (cs?.brief_text) {
+                                                setCompileForm((f) => ({
+                                                  ...f,
+                                                  [src.id]: { ...f[src.id]!, brief: cs.brief_text! },
+                                                }));
+                                              }
+                                            }).catch(() => {});
+                                          } else {
+                                            setSelectedKpStatus((prev) => ({ ...prev, [src.id]: {} }));
+                                          }
+                                        }}
                                         placeholder="e.g. wiki-onboarding"
                                         className="rounded border border-gray-300 px-2 py-1 text-xs w-36"
                                       />
+                                      <datalist id={`kp-keys-${src.id}`}>
+                                        {Object.entries(productIndex).map(([key, kp]) => (
+                                          <option key={key} value={key}>{kp.name}</option>
+                                        ))}
+                                      </datalist>
                                     </div>
                                     <div>
                                       <label className="block text-xs text-gray-500 mb-0.5">Name</label>
@@ -1997,35 +1984,318 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                       />
                                     </div>
                                   </div>
+                                  {productIndex[form.productKey.trim()] && (
+                                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                      This product already exists — compiling will merge new pages into the existing draft.
+                                    </p>
+                                  )}
                                   <div>
                                     <label className="block text-xs text-gray-500 mb-0.5">
-                                      Product Brief <span className="text-gray-400">(describe what this KP is about — used to filter irrelevant pages during compilation)</span>
+                                      Product Brief <span className="text-gray-400">(pages below the similarity threshold will be skipped before the LLM pass)</span>
                                     </label>
                                     <textarea
                                       value={form.brief}
-                                      onChange={(e) => setCompileForm((f) => ({ ...f, [src.id]: { ...f[src.id]!, brief: e.target.value } }))}
+                                      onChange={(e) => {
+                                        const brief = e.target.value;
+                                        setCompileForm((f) => ({
+                                          ...f,
+                                          [src.id]: {
+                                            ...f[src.id]!,
+                                            brief,
+                                          },
+                                        }));
+                                        setCompileScoredApplied((prev) => ({ ...prev, [src.id]: false }));
+                                        setShowOnlySelected((prev) => ({ ...prev, [src.id]: false }));
+                                      }}
                                       placeholder="e.g. Customer self-service processes on posten.no — tracking parcels, managing delivery, address services and mail handling."
                                       rows={2}
                                       className="w-full rounded border border-gray-300 px-2 py-1 text-xs"
                                     />
                                   </div>
-                                  <div className="flex items-center gap-2">
+                                  {form.brief.trim() && (() => {
+                                    const allSucceeded = filteredPages.filter((pg) => pg.latest_run_status === "succeeded");
+                                    const total = allSucceeded.length;
+                                    const scores = relevanceScores[src.id] ?? [];
+                                    const scoreMap = new Map(scores.map((s) => [s.page_id, s.similarity]));
+                                    const hasScores = scores.length > 0;
+                                    const mode: "percentile" | "absolute" = filterMode[src.id] ?? "percentile";
+                                    // Percentile bucket map: rank by similarity desc, decile 0=top 10% … 9=bottom 10%
+                                    const sortedScored = [...scores].sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+                                    const pagePercentileBucket = new Map<string, number>();
+                                    sortedScored.forEach((s, rank) => {
+                                      pagePercentileBucket.set(s.page_id, Math.min(Math.floor(rank / sortedScored.length * 10), 9));
+                                    });
+                                    // Absolute bucket map: 0=0–10% score … 9=90–100% score
+                                    const pageAbsoluteBucket = new Map<string, number>();
+                                    scores.forEach((s) => {
+                                      pageAbsoluteBucket.set(s.page_id, Math.min(Math.floor((s.similarity ?? 0) * 10), 9));
+                                    });
+                                    const activeBucketMap = mode === "percentile" ? pagePercentileBucket : pageAbsoluteBucket;
+                                    const percentileLabel = (i: number) => i === 0 ? "Top 10%" : i === 9 ? "Bottom 10%" : `${i * 10 + 1}–${(i + 1) * 10}%`;
+                                    const absoluteLabel = (i: number) => i === 0 ? "0–10%" : `${i * 10 + 1}–${(i + 1) * 10}%`;
+                                    const bucketLabel = mode === "percentile" ? percentileLabel : absoluteLabel;
+                                    const bucketCounts = new Map<number, number>();
+                                    for (let i = 0; i < 10; i++) bucketCounts.set(i, 0);
+                                    if (hasScores) {
+                                      for (const pg of allSucceeded) {
+                                        const b = activeBucketMap.get(pg.id);
+                                        if (b !== undefined) bucketCounts.set(b, (bucketCounts.get(b) ?? 0) + 1);
+                                      }
+                                    }
+                                    const checkedBuckets: Set<number> = pageScoreBuckets[src.id] ?? new Set();
+                                    const passCount = hasScores
+                                      ? allSucceeded.filter((pg) => { const b = activeBucketMap.get(pg.id); return b !== undefined && checkedBuckets.has(b); }).length
+                                      : total;
+                                    const unscoredCount = hasScores
+                                      ? allSucceeded.filter((pg) => !activeBucketMap.has(pg.id)).length
+                                      : 0;
+                                    const matchedKp = (compiledKps[src.id] ?? []).find((kp) => kp.product_key === form.productKey.trim());
+                                    const scored = compileScoredApplied[src.id] ?? false;
+                                    const selectedCount = selectedWebPages[src.id]?.size ?? 0;
+                                    const applyBuckets = (newBuckets: Set<number>, bucketMap: Map<string, number>) => {
+                                      const reSelected = new Set(
+                                        filteredPages
+                                          .filter((pg) => pg.latest_run_status === "succeeded")
+                                          .filter((pg) => { const b = bucketMap.get(pg.id); return b !== undefined && newBuckets.has(b); })
+                                          .map((pg) => pg.id)
+                                      );
+                                      setSelectedWebPages((prev) => ({ ...prev, [src.id]: reSelected }));
+                                      setCompileScoredApplied((prev) => ({ ...prev, [src.id]: true }));
+                                      setShowOnlySelected((prev) => ({ ...prev, [src.id]: true }));
+                                    };
+                                    return (
+                                      <div className="rounded border border-purple-200 bg-purple-50 p-2 space-y-2">
+                                        <p className="text-xs font-semibold text-purple-800">Step 1 — Semantic filter</p>
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <button
+                                            type="button"
+                                            disabled={fetchingRelevance === src.id || !form.brief.trim()}
+                                            onClick={async () => {
+                                              setFetchingRelevance(src.id);
+                                              try {
+                                                let newScores: import("@/lib/types").PageRelevanceScore[];
+                                                if (matchedKp) {
+                                                  await api.generateKpEmbedding(src.id, matchedKp.product_id, form.brief.trim());
+                                                  newScores = await api.getPageRelevance(src.id, matchedKp.product_id);
+                                                } else {
+                                                  newScores = await api.scorePagesByBrief(src.id, form.brief.trim());
+                                                }
+                                                setRelevanceScores((s) => ({ ...s, [src.id]: newScores }));
+                                                const allBuckets = new Set<number>([0,1,2,3,4,5,6,7,8,9]);
+                                                setPageScoreBuckets((prev) => ({ ...prev, [src.id]: allBuckets }));
+                                                // Pre-select all scored pages (all buckets checked)
+                                                const scoredPageIds = new Set(newScores.map((s) => s.page_id));
+                                                const preSelected = new Set(
+                                                  filteredPages
+                                                    .filter((pg) => pg.latest_run_status === "succeeded" && scoredPageIds.has(pg.id))
+                                                    .map((pg) => pg.id)
+                                                );
+                                                setSelectedWebPages((prev) => ({ ...prev, [src.id]: preSelected }));
+                                                setCompileScoredApplied((prev) => ({ ...prev, [src.id]: true }));
+                                                setShowOnlySelected((prev) => ({ ...prev, [src.id]: true }));
+                                              } catch { /* silently ignore */ }
+                                              finally { setFetchingRelevance(null); }
+                                            }}
+                                            className="rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-40"
+                                          >
+                                            {fetchingRelevance === src.id ? "Scoring…" : hasScores ? "Re-score pages" : "Score & Pre-select pages"}
+                                          </button>
+                                          {scored && (
+                                            <>
+                                              <span className="text-xs text-green-700">✓ {selectedCount} pages selected</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => setShowOnlySelected((prev) => ({ ...prev, [src.id]: !prev[src.id] }))}
+                                                className="text-xs text-indigo-600 hover:text-indigo-800 underline"
+                                              >
+                                                {showOnlySelected[src.id] ? "Show all pages" : "Show selected only"}
+                                              </button>
+                                            </>
+                                          )}
+                                        </div>
+                                        <div className="space-y-1">
+                                          {/* Mode toggle */}
+                                          <div className="flex items-center gap-1 text-xs mb-1">
+                                            <span className="text-gray-500 mr-1">Filter by:</span>
+                                            {(["percentile", "absolute"] as const).map((m) => (
+                                              <button
+                                                key={m}
+                                                type="button"
+                                                onClick={() => {
+                                                  setFilterMode((prev) => ({ ...prev, [src.id]: m }));
+                                                  // Recompute selection with same checked buckets under new mode
+                                                  const newMap = m === "percentile" ? pagePercentileBucket : pageAbsoluteBucket;
+                                                  applyBuckets(checkedBuckets, newMap);
+                                                }}
+                                                className={`px-2 py-0.5 rounded border text-xs ${mode === m ? "bg-purple-600 text-white border-purple-600" : "bg-white text-gray-500 border-gray-300 hover:border-purple-400"}`}
+                                              >
+                                                {m === "percentile" ? "Percentile rank" : "Absolute score"}
+                                              </button>
+                                            ))}
+                                          </div>
+                                          <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                            {Array.from({ length: 10 }, (_, i) => {
+                                              const count = bucketCounts.get(i) ?? 0;
+                                              const checked = checkedBuckets.has(i);
+                                              return (
+                                                <label key={i} className={`flex items-center gap-1 text-xs cursor-pointer select-none ${!hasScores ? "opacity-40 pointer-events-none" : ""}`}>
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    disabled={!hasScores}
+                                                    onChange={() => {
+                                                      const next = new Set(checkedBuckets);
+                                                      if (next.has(i)) next.delete(i); else next.add(i);
+                                                      setPageScoreBuckets((prev) => ({ ...prev, [src.id]: next }));
+                                                      applyBuckets(next, activeBucketMap);
+                                                    }}
+                                                    className="rounded"
+                                                  />
+                                                  <span className={checked && hasScores ? "text-purple-700 font-medium" : "text-gray-500"}>
+                                                    {bucketLabel(i)}
+                                                  </span>
+                                                  <span className="text-gray-400">({count})</span>
+                                                </label>
+                                              );
+                                            })}
+                                          </div>
+                                          <div>
+                                            {!hasScores
+                                              ? <span className="text-xs text-gray-400">Score pages to see counts per bucket</span>
+                                              : <span className="text-xs text-gray-500">
+                                                  {passCount} of {total - unscoredCount} scored pages selected
+                                                  {unscoredCount > 0 && <span className="text-gray-400"> · {unscoredCount} unscored</span>}
+                                                </span>}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                  {/* Regex filter */}
+                                  <div className="space-y-1.5">
+                                    {(filterRows.length ? filterRows : []).map((row, i) => {
+                                      let rowInvalid = false;
+                                      if (row.pattern.trim()) {
+                                        try { new RegExp(row.pattern, "i"); } catch { rowInvalid = true; }
+                                      }
+                                      return (
+                                        <div key={i} className="space-y-1">
+                                          {i > 0 && (
+                                            <div className="flex items-center gap-1 pl-1">
+                                              {(["AND", "OR"] as FilterConnector[]).map((op) => (
+                                                <button
+                                                  key={op}
+                                                  onClick={() => setRows((rows) => rows.map((r, idx) => idx === i ? { ...r, connector: op } : r))}
+                                                  className={`px-2 py-0.5 rounded text-xs font-mono font-semibold border transition-colors ${row.connector === op ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-500 border-gray-300 hover:border-indigo-400"}`}
+                                                >
+                                                  {op}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          )}
+                                          <div className="flex items-center gap-1.5">
+                                            <select
+                                              value={row.field}
+                                              onChange={(e) => setRows((rows) => rows.map((r, idx) => idx === i ? { ...r, field: e.target.value as FilterField } : r))}
+                                              className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 bg-white shrink-0"
+                                            >
+                                              <option value="url">URL</option>
+                                              <option value="title">Title</option>
+                                              <option value="compiled_kp">Compiled KP</option>
+                                              <option value="tags">Tags</option>
+                                            </select>
+                                            <div className="relative flex-1">
+                                              <input
+                                                value={row.pattern}
+                                                onChange={(e) => setRows((rows) => rows.map((r, idx) => idx === i ? { ...r, pattern: e.target.value } : r))}
+                                                placeholder="regex pattern, e.g. /en/ or ^https://wiki"
+                                                className={`w-full rounded border px-3 py-1 text-xs font-mono ${rowInvalid ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                                              />
+                                              {rowInvalid && (
+                                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-red-500">invalid regex</span>
+                                              )}
+                                            </div>
+                                            {filterRows.length > 0 && (
+                                              <button
+                                                onClick={() => removeRow(i)}
+                                                className="shrink-0 text-gray-400 hover:text-red-500 text-sm leading-none px-1"
+                                                title="Remove filter"
+                                              >×</button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    <div className="flex items-center gap-3 pt-0.5">
+                                      <button onClick={addRow} className="text-xs text-indigo-600 hover:text-indigo-800 font-medium">+ Add filter</button>
+                                      {hasFilter && (
+                                        <>
+                                          <span className="text-xs text-gray-500">{filteredPages.length} of {srcPages.length} match</span>
+                                          <button onClick={clearFilters} className="text-xs text-gray-400 hover:text-gray-600">Clear</button>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 flex-wrap">
                                     <button
-                                      onClick={() => handleCompile(src.id, filteredPages)}
-                                      disabled={isCompiling || !form.productKey.trim() || !form.name.trim() || !form.owner.trim()}
+                                      onClick={() => handleCompile(src.id, srcPages)}
+                                      disabled={
+                                        isCompiling ||
+                                        !form.productKey.trim() ||
+                                        !form.name.trim() ||
+                                        !form.owner.trim() ||
+                                        (!!(form.brief.trim()) && !(compileScoredApplied[src.id] ?? false))
+                                      }
                                       className="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
                                     >
-                                      {isCompiling ? "Compiling…" : "Compile"}
+                                      {isCompiling ? "Compiling…"
+                                        : (compileScoredApplied[src.id] ?? false) ? `Step 2 — Compile ${compileCount} selected → KP`
+                                        : "Compile"}
                                     </button>
+                                    {form.brief.trim() && !(compileScoredApplied[src.id] ?? false) && !isCompiling && (
+                                      <span className="text-xs text-amber-600">← Score & pre-select pages first</span>
+                                    )}
                                     <button
-                                      onClick={() => setCompileForm((f) => ({ ...f, [src.id]: null }))}
+                                      onClick={() => {
+                                        setCompileForm((f) => ({ ...f, [src.id]: null }));
+                                        setFiltersOpen((f) => ({ ...f, [src.id]: false }));
+                                      }}
                                       className="text-xs text-gray-400 hover:text-gray-600"
-                                    >Cancel</button>
+                                    >Close</button>
                                   </div>
                                 </div>
-                              )}
+                                )}
+                              </div>
+                            )}
 
-                              {/* Compile progress */}
+                              {/* Filter stats — shown during and after compile whenever a pre-filter ran */}
+                              {compileFilterStats[src.id] && (() => {
+                                const fstats = compileFilterStats[src.id]!;
+                                return (
+                                  <div className="px-4 py-2 border-t border-gray-200 flex items-center justify-between gap-2">
+                                    <div className={`text-xs flex items-center gap-2 ${fstats.warning ? "text-amber-600" : "text-purple-700"}`}>
+                                      {fstats.warning === "no_kp_embedding"
+                                        ? "⚠ Vector pre-filter skipped — no KP embedding could be generated"
+                                        : <>Vector pre-filter: <strong>{fstats.filtered}</strong> filtered, <strong>{fstats.remaining}</strong> sent to LLM{fstats.noEmbedding > 0 ? ` (${fstats.noEmbedding} had no embedding — kept)` : ""}</>
+                                      }
+                                    </div>
+                                    {fstats.filtered > 0 && (
+                                      <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer shrink-0">
+                                        <input
+                                          type="checkbox"
+                                          checked={hideVectorFiltered[src.id] ?? false}
+                                          onChange={(e) => setHideVectorFiltered((h) => ({ ...h, [src.id]: e.target.checked }))}
+                                          className="rounded"
+                                        />
+                                        Hide filtered
+                                      </label>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+
+                              {/* Compile progress bar — shown only while compiling */}
                               {isCompiling && (() => {
                                 const prog = compileProgress[src.id];
                                 const pct = prog && prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
@@ -2050,7 +2320,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
 
                               {/* Compiled KP result */}
                               {lastKp && !form && !isCompiling && (
-                                <div className="px-4 pb-2 flex items-center gap-2 text-xs text-green-700">
+                                <div className="px-4 py-2 flex items-center gap-2 text-xs text-green-700 border-b border-gray-200">
                                   <span>✓ Compiled →</span>
                                   <a href={`/products/${lastKp.id}`} className="font-medium underline hover:text-green-900">
                                     {lastKp.name} v{lastKp.semver}
@@ -2058,7 +2328,7 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                   <button onClick={() => setCompiledKp((c) => ({ ...c, [src.id]: null }))} className="text-gray-400 hover:text-gray-600 ml-1">×</button>
                                 </div>
                               )}
-                            </div>
+                            </>
                           );
                         })()}
                         {showLegend && (
@@ -2115,49 +2385,12 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                             </div>
                           </div>
                         )}
-                        {/* KP filter bar */}
-                        {(compiledKps[src.id]?.length ?? 0) > 0 && (
-                          <div className="flex items-center gap-3 mb-2 px-4 py-2 border-b border-gray-100">
-                            <label className="text-xs text-gray-500 shrink-0">Filter by KP:</label>
-                            <select
-                              value={selectedKpId ?? ""}
-                              onChange={(e) => {
-                                setSelectedKpId(e.target.value || null);
-                                setShowNotInKp(false);
-                              }}
-                              className="rounded border border-gray-300 px-2 py-1 text-xs"
-                            >
-                              <option value="">All pages</option>
-                              {(compiledKps[src.id] ?? []).map((kp) => (
-                                <option key={kp.product_id} value={kp.product_id}>
-                                  {kp.product_name} ({kp.compiled_page_count})
-                                </option>
-                              ))}
-                            </select>
-                            <label className={`flex items-center gap-1.5 text-xs ${!selectedKpId ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
-                              <input
-                                type="checkbox"
-                                checked={showNotInKp}
-                                disabled={!selectedKpId}
-                                onChange={(e) => setShowNotInKp(e.target.checked)}
-                                className="rounded"
-                              />
-                              Show pages not in KP
-                            </label>
-                            {selectedKpId && (
-                              <span className="text-xs text-gray-400">
-                                {showNotInKp
-                                  ? `${kpFiltered.length} page${kpFiltered.length !== 1 ? "s" : ""} not in KP`
-                                  : `${kpFiltered.length} page${kpFiltered.length !== 1 ? "s" : ""} compiled`}
-                              </span>
-                            )}
-                          </div>
-                        )}
                         <div className="overflow-x-auto">
-                          <table className="text-xs" style={{ tableLayout: "fixed", width: Object.values(colWidths).reduce((a, b) => a + b, 0) }}>
+                          <table className="text-xs" style={{ tableLayout: "fixed", width: Object.values(colWidths).reduce((a, v) => a + v, 0) }}>
                             <colgroup>
                               <col style={{ width: colWidths.cb }} />
                               <col style={{ width: colWidths.title }} />
+                              {compileScoredApplied[src.id] && <col style={{ width: "72px" }} />}
                               <col style={{ width: colWidths.url }} />
                               <col style={{ width: colWidths.curation }} />
                               <col style={{ width: colWidths.compiled_kp }} />
@@ -2188,24 +2421,24 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                         title="Select all filtered pages"
                                       />
                                     </th>
-                                    {(["title", "url", "curation"] as const).map((col, i) => (
-                                      <th key={col} className="px-4 py-2 font-medium relative" style={{ width: colWidths[col] }}>
-                                        <span className="inline-flex items-center gap-1">
-                                          {["Title", "URL", "Curation"][i]}
-                                          {col === "curation" && (
-                                            <button
-                                              onClick={() => setShowLegend((v) => !v)}
-                                              className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold bg-gray-200 text-gray-500 hover:bg-indigo-100 hover:text-indigo-600 leading-none"
-                                              title="Show status legend"
-                                            >?</button>
-                                          )}
-                                        </span>
-                                        <span
-                                          onMouseDown={(e) => startColResize(col, e)}
-                                          className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80"
-                                        />
-                                      </th>
-                                    ))}
+                                    <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.title }}>
+                                      Title
+                                      <span onMouseDown={(e) => startColResize("title", e)} className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80" />
+                                    </th>
+                                    {compileScoredApplied[src.id] && (
+                                      <th className="px-4 py-2 font-medium text-purple-700 text-xs" style={{ width: "72px" }}>Score</th>
+                                    )}
+                                    <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.url }}>
+                                      URL
+                                      <span onMouseDown={(e) => startColResize("url", e)} className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80" />
+                                    </th>
+                                    <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.curation }}>
+                                      <span className="inline-flex items-center gap-1">
+                                        Curation
+                                        <button onClick={() => setShowLegend((v) => !v)} className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold bg-gray-200 text-gray-500 hover:bg-indigo-100 hover:text-indigo-600 leading-none" title="Show status legend">?</button>
+                                      </span>
+                                      <span onMouseDown={(e) => startColResize("curation", e)} className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400 opacity-0 hover:opacity-60 active:opacity-80" />
+                                    </th>
                                     <th className="px-4 py-2 font-medium relative" style={{ width: colWidths.compiled_kp }}>
                                       Compiled KP
                                       <span
@@ -2232,7 +2465,22 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                               })()}
                             </thead>
                             <tbody className="divide-y divide-gray-100">
-                              {displayPages.map((pg) => {
+                              {(() => {
+                                // Build bucket map once for the whole table, respecting active filter mode
+                                const srcScores = relevanceScores[src.id] ?? [];
+                                const tableMode: "percentile" | "absolute" = filterMode[src.id] ?? "percentile";
+                                const tableBucketMap = new Map<string, number>();
+                                if (tableMode === "percentile") {
+                                  const sorted = [...srcScores].sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+                                  sorted.forEach((s, rank) => {
+                                    tableBucketMap.set(s.page_id, Math.min(Math.floor(rank / sorted.length * 10), 9));
+                                  });
+                                } else {
+                                  srcScores.forEach((s) => {
+                                    tableBucketMap.set(s.page_id, Math.min(Math.floor((s.similarity ?? 0) * 10), 9));
+                                  });
+                                }
+                                return displayPages.map((pg) => {
                                 const isCurating = curatingPages.has(pg.id);
                                 const status = isCurating ? "running" : pg.latest_run_status;
                                 const compileStatus = compilePageStatus[src.id]?.[pg.id] ?? null;
@@ -2241,15 +2489,17 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                   compiled: "bg-green-100 text-green-700",
                                   discarded: "bg-amber-100 text-amber-700",
                                   failed: "bg-red-100 text-red-700",
+                                  not_relevant: "bg-gray-100 text-gray-500",
                                 };
                                 const compileLabelMap: Record<string, string> = {
                                   compiling: "Compiling…",
                                   compiled: "Compiled",
                                   discarded: "Discarded",
                                   failed: "Compile failed",
+                                  not_relevant: "Filtered",
                                 };
                                 const isSelected = selectedWebPages[src.id]?.has(pg.id) ?? false;
-                                const colSpan = 7; // cb + title + url + curation + compiled_kp + fetched + action
+                                const colSpan = 7 + (compileScoredApplied[src.id] ? 1 : 0); // cb + title + [score] + url + curation + compiled_kp + fetched + action
                                 const isChanged = pg.changed_since_extraction;
                                 const rows: React.ReactNode[] = [
                                   <tr key={`${pg.id}-row`} className={`hover:bg-gray-50 ${isSelected ? "bg-indigo-50/40" : isChanged ? "bg-red-50" : ""}`}>
@@ -2265,6 +2515,30 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                     <td className="px-4 py-2 font-medium text-gray-800 overflow-hidden text-ellipsis whitespace-nowrap" title={pg.title}>
                                       {pg.title}
                                     </td>
+                                    {compileScoredApplied[src.id] && (() => {
+                                      const sim = (relevanceScores[src.id] ?? []).find((s) => s.page_id === pg.id)?.similarity ?? null;
+                                      const bucket = tableBucketMap.get(pg.id) ?? -1;
+                                      const inRange = bucket >= 0 && (pageScoreBuckets[src.id]?.has(bucket) ?? true);
+                                      return (
+                                        <td className="px-2 py-2" style={{ width: "72px" }}>
+                                          {sim !== null ? (
+                                            <div className="flex flex-col items-center gap-0.5">
+                                              <div className="w-full h-1.5 rounded-full bg-gray-200 overflow-hidden">
+                                                <div
+                                                  className={`h-full rounded-full ${inRange ? "bg-purple-500" : "bg-gray-400"}`}
+                                                  style={{ width: `${Math.round(sim * 100)}%` }}
+                                                />
+                                              </div>
+                                              <span className={`text-xs font-mono ${inRange ? "text-purple-700" : "text-gray-400"}`}>
+                                                {Math.round(sim * 100)}%
+                                              </span>
+                                            </div>
+                                          ) : (
+                                            <span className="text-xs text-gray-300">—</span>
+                                          )}
+                                        </td>
+                                      );
+                                    })()}
                                     <td className="px-4 py-2 overflow-hidden whitespace-nowrap">
                                       <a href={pg.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline font-mono text-xs" title={pg.url}>
                                         {pg.url}
@@ -2315,22 +2589,26 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                       </div>
                                     </td>
                                     <td className="px-4 py-2" style={{ width: colWidths.compiled_kp }}>
-                                      {pg.compiled_kp_count > 0 ? (
-                                        <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
-                                          In {pg.compiled_kp_count} KP{pg.compiled_kp_count !== 1 ? "s" : ""}
-                                        </span>
-                                      ) : (
-                                        <span className="text-gray-300 text-xs">—</span>
-                                      )}
-                                      {selectedKpId && (() => {
-                                        const s = (kpStatusMap[src.id] ?? {})[pg.id];
-                                        if (s === "not_relevant") return (
-                                          <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">Not relevant</span>
+                                      {(() => {
+                                        const kpStatus = selectedKpStatus[src.id]?.[pg.id];
+                                        const targetKey = srcForm?.productKey.trim();
+                                        const targetName = targetKey ? (productIndex[targetKey]?.name ?? targetKey) : null;
+                                        return (
+                                          <>
+                                            {pg.compiled_kp_count > 0 ? (
+                                              <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                                                In {pg.compiled_kp_count} KP{pg.compiled_kp_count !== 1 ? "s" : ""}
+                                              </span>
+                                            ) : (
+                                              <span className="text-gray-300 text-xs">—</span>
+                                            )}
+                                            {kpStatus === "compiled" && targetName && (
+                                              <span className="block text-xs text-indigo-600 mt-0.5 truncate" title={targetName}>
+                                                ✓ {targetName}
+                                              </span>
+                                            )}
+                                          </>
                                         );
-                                        if (s === "none") return (
-                                          <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">Not compiled</span>
-                                        );
-                                        return null;
                                       })()}
                                     </td>
                                     <td className="px-4 py-2 text-gray-400 whitespace-nowrap overflow-hidden">
@@ -2361,7 +2639,8 @@ function WebWikisTab({ isOwner }: { isOwner: boolean }) {
                                   </tr>,
                                 ];
                                 return rows;
-                              })}
+                              });
+                              })()}
                             </tbody>
                           </table>
                         </div>

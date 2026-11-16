@@ -198,17 +198,17 @@ that calls the generate-kp-embedding endpoint.
 
 ## Acceptance criteria
 
-- [ ] `pgvector` extension enabled; `web_page_embedding` and `knowledge_product_embedding` tables created by migration
-- [ ] `LLMCurationPort.embed()` implemented in Anthropic and OpenAI adapters
-- [ ] Background embedding worker processes up to 20 pages per tick; stale embeddings (changed `content_hash`) are replaced
-- [ ] `GET /{source_id}/pages/relevance` returns all pages with similarity scores in < 500 ms for a 500-page source (HNSW index)
-- [ ] Selecting a KP in the dropdown and clicking "Find relevant" shows pages ranked by similarity with score bars
-- [ ] Pages without an embedding are shown at the bottom with "Not yet scored"
-- [ ] "Select top N (≥ 65 %)" button pre-selects matching pages for bulk curation/compile
-- [ ] Threshold slider adjusts the pre-selection live
-- [ ] Embedding coverage line below the dropdown shows pending count and refreshes
-- [ ] `embedding_status` field appears on `WebPage` API response
-- [ ] KP intent embedding is (re)generated when a brief is added or the KP version changes
+- [x] `pgvector` extension enabled; `web_page_embedding` and `knowledge_product_embedding` tables created by migration
+- [x] `LLMCurationPort.embed()` implemented in Anthropic and OpenAI adapters
+- [x] Background embedding worker processes up to 20 pages per tick; stale embeddings (changed `content_hash`) are replaced
+- [x] `GET /{source_id}/pages/relevance` returns all pages with similarity scores in < 500 ms for a 500-page source (HNSW index)
+- [x] Selecting a KP in the dropdown and clicking "Find relevant" shows pages ranked by similarity with score bars
+- [x] Pages without an embedding are shown at the bottom with "Not yet scored"
+- [x] "Select top N (≥ 65 %)" button pre-selects matching pages for bulk curation/compile
+- [x] Threshold slider adjusts the pre-selection live
+- [x] Embedding coverage line below the dropdown shows pending count and refreshes
+- [x] `embedding_status` field appears on `WebPage` API response
+- [x] KP intent embedding is (re)generated when a brief is added or the KP version changes
 
 ## Out of scope
 

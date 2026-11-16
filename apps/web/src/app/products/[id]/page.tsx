@@ -7,7 +7,7 @@ import { NavBar } from "@/components/NavBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { api, ApiError } from "@/lib/api";
 import { getToken, getUser, redirectIfUnauthorized } from "@/lib/auth";
-import type { ApprovalRequest, CanonicalContent, KnowledgeProduct } from "@/lib/types";
+import type { ApprovalRequest, CanonicalContent, CompilePageEntry, CompileSessionDetail, KnowledgeProduct } from "@/lib/types";
 
 // ── editable draft types ──────────────────────────────────────────────────────
 
@@ -130,6 +130,9 @@ export default function ProductDetailPage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [tab, setTab] = useState<"overview" | "content">("overview");
+  const [compileSession, setCompileSession] = useState<CompileSessionDetail | null>(null);
+  const [pagesTab, setPagesTab] = useState<"all" | "compiled" | "filtered" | "failed">("all");
 
   async function reload() {
     const p = await api.getProduct(params.id);
@@ -146,6 +149,7 @@ export default function ProductDetailPage() {
     reload().catch((err) => {
       if (!redirectIfUnauthorized(err, router)) setError(String(err));
     });
+    api.getLatestCompileSession(params.id).then(setCompileSession).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id, router]);
 
@@ -264,12 +268,210 @@ export default function ProductDetailPage() {
           </div>
         )}
 
-        {editing && draft ? (
-          <EditForm draft={draft} onChange={setDraft} />
-        ) : (
-          <ViewMode v={v} />
+        {/* Tab bar */}
+        <div className="mt-6 border-b border-gray-200">
+          <nav className="flex gap-6">
+            <button
+              onClick={() => setTab("overview")}
+              className={`pb-3 text-sm font-medium ${tab === "overview" ? "border-b-2 border-gray-900 text-gray-900" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              Overview
+            </button>
+            <button
+              onClick={() => setTab("content")}
+              className={`pb-3 text-sm font-medium ${tab === "content" ? "border-b-2 border-gray-900 text-gray-900" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              Content
+            </button>
+          </nav>
+        </div>
+
+        {tab === "overview" && (
+          <OverviewTab
+            product={product}
+            compileSession={compileSession}
+            pagesTab={pagesTab}
+            onPagesTabChange={setPagesTab}
+          />
+        )}
+
+        {tab === "content" && (
+          editing && draft ? (
+            <EditForm draft={draft} onChange={setDraft} />
+          ) : (
+            <ViewMode v={v} />
+          )
         )}
       </main>
+    </div>
+  );
+}
+
+// ── overview tab ──────────────────────────────────────────────────────────────
+
+function OverviewTab({
+  product,
+  compileSession,
+  pagesTab,
+  onPagesTabChange,
+}: {
+  product: KnowledgeProduct;
+  compileSession: CompileSessionDetail | null;
+  pagesTab: "all" | "compiled" | "filtered" | "failed";
+  onPagesTabChange: (t: "all" | "compiled" | "filtered" | "failed") => void;
+}) {
+  const v = product.current_version;
+  const [briefExpanded, setBriefExpanded] = useState(true);
+
+  const pages = compileSession?.pages ?? [];
+  const filteredPages = pagesTab === "all" ? pages
+    : pagesTab === "compiled" ? pages.filter((p) => p.status === "compiled")
+    : pagesTab === "filtered" ? pages.filter((p) => p.status === "not_relevant" || p.status === "discarded")
+    : pages.filter((p) => p.status === "failed");
+
+  const totals = compileSession?.totals;
+
+  function pageStatusBadge(status: CompilePageEntry["status"]) {
+    const cls: Record<string, string> = {
+      compiled: "bg-green-100 text-green-700",
+      not_relevant: "bg-gray-100 text-gray-600",
+      discarded: "bg-gray-100 text-gray-600",
+      failed: "bg-red-100 text-red-700",
+      skipped: "bg-yellow-50 text-yellow-700",
+      running: "bg-blue-50 text-blue-700",
+      pending: "bg-gray-50 text-gray-500",
+    };
+    const label: Record<string, string> = {
+      compiled: "compiled",
+      not_relevant: "filtered",
+      discarded: "discarded",
+      failed: "failed",
+      skipped: "skipped",
+      running: "running",
+      pending: "pending",
+    };
+    return (
+      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${cls[status] ?? "bg-gray-100 text-gray-600"}`}>
+        {label[status] ?? status}
+      </span>
+    );
+  }
+
+  return (
+    <div className="mt-6 space-y-6">
+      {/* Product metadata */}
+      <section className="rounded-lg border border-gray-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-gray-900">Metadata</h2>
+        <div className="mt-3 space-y-1">
+          <div className="flex gap-2 text-sm"><span className="w-20 text-gray-500">Key</span><span className="text-gray-900">{product.product_key}</span></div>
+          <div className="flex gap-2 text-sm"><span className="w-20 text-gray-500">Owner</span><span className="text-gray-900">{product.owner}</span></div>
+          <div className="flex gap-2 text-sm"><span className="w-20 text-gray-500">Version</span><span className="text-gray-900">v{v.semver}</span></div>
+          <div className="flex gap-2 text-sm"><span className="w-20 text-gray-500">Status</span><span className="text-gray-900">{v.status}</span></div>
+          {v.compiled_at && (
+            <div className="flex gap-2 text-sm">
+              <span className="w-20 text-gray-500">Compiled</span>
+              <span className="text-gray-900">{new Date(v.compiled_at).toLocaleString()}</span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Product brief */}
+      {compileSession?.brief_text ? (
+        <section className="rounded-lg border border-gray-200 bg-white p-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-gray-900">Product Brief</h2>
+            <button
+              onClick={() => setBriefExpanded(!briefExpanded)}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              {briefExpanded ? "Collapse" : "Expand"}
+            </button>
+          </div>
+          {briefExpanded && (
+            <p className="mt-3 whitespace-pre-wrap text-sm text-gray-700">{compileSession.brief_text}</p>
+          )}
+        </section>
+      ) : (
+        <section className="rounded-lg border border-gray-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-gray-900">Product Brief</h2>
+          <p className="mt-2 text-sm text-gray-400">No brief available for the latest compile session.</p>
+        </section>
+      )}
+
+      {/* Compiled pages */}
+      <section className="rounded-lg border border-gray-200 bg-white p-5">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Compiled Pages</h2>
+            {compileSession && (
+              <p className="mt-0.5 text-xs text-gray-500">
+                Session {compileSession.status} · {totals?.compiled ?? 0} compiled · {totals?.not_relevant ?? 0} filtered · {totals?.failed ?? 0} failed
+              </p>
+            )}
+          </div>
+          {compileSession && (
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${compileSession.status === "completed" ? "bg-green-100 text-green-700" : compileSession.status === "running" ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"}`}>
+              {compileSession.status}
+            </span>
+          )}
+        </div>
+
+        {!compileSession ? (
+          <p className="mt-3 text-sm text-gray-400">No compile session found.</p>
+        ) : (
+          <>
+            {/* Sub-tab bar */}
+            <div className="mt-4 flex gap-4 border-b border-gray-100">
+              {(["all", "compiled", "filtered", "failed"] as const).map((t) => {
+                const count = t === "all" ? pages.length
+                  : t === "compiled" ? (totals?.compiled ?? 0)
+                  : t === "filtered" ? ((totals?.not_relevant ?? 0) + (totals?.discarded ?? 0))
+                  : (totals?.failed ?? 0);
+                return (
+                  <button
+                    key={t}
+                    onClick={() => onPagesTabChange(t)}
+                    className={`pb-2.5 text-xs font-medium capitalize ${pagesTab === t ? "border-b-2 border-gray-800 text-gray-900" : "text-gray-400 hover:text-gray-600"}`}
+                  >
+                    {t} <span className="ml-1 text-gray-400">({count})</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Page list */}
+            {filteredPages.length === 0 ? (
+              <p className="mt-4 text-sm text-gray-400">No pages in this category.</p>
+            ) : (
+              <ul className="mt-3 divide-y divide-gray-50">
+                {filteredPages.map((pg, i) => (
+                  <li key={pg.page_id ?? i} className="py-2.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        {pg.url ? (
+                          <a href={pg.url} target="_blank" rel="noreferrer"
+                            className="block truncate text-sm font-medium text-blue-600 hover:underline">
+                            {pg.title || pg.url}
+                          </a>
+                        ) : (
+                          <span className="block truncate text-sm font-medium text-gray-900">{pg.title || "—"}</span>
+                        )}
+                        <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-400">
+                          {pg.source_name && <span>{pg.source_name}</span>}
+                          {pg.compiled_at && <span>· {new Date(pg.compiled_at).toLocaleDateString()}</span>}
+                          {pg.reason && <span className="text-gray-400">· {pg.reason}</span>}
+                        </div>
+                      </div>
+                      <div className="shrink-0">{pageStatusBadge(pg.status)}</div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </section>
     </div>
   );
 }

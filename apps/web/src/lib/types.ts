@@ -113,6 +113,15 @@ export interface WebPage {
   changed_since_extraction: boolean;
   is_thin_content: boolean;
   compiled_kp_count: number;
+  embedding_status: "ready" | "stale" | "pending" | "none";
+}
+
+export interface PageRelevanceScore {
+  page_id: string;
+  title: string;
+  url: string;
+  similarity: number | null;
+  has_embedding: boolean;
 }
 
 export interface CompiledKpSummary {
@@ -125,6 +134,12 @@ export interface CompiledKpSummary {
 export interface PageKpStatus {
   page_id: string;
   status: "compiled" | "not_relevant" | "none";
+}
+
+export interface PageCompiledKp {
+  page_id: string;
+  kp_key: string;
+  kp_name: string;
 }
 
 export interface WebPageLink {
@@ -219,4 +234,29 @@ export interface CurationRun {
   compiled_version_id?: string | null;
   prev_compiled_product?: CompiledProductSummary | null;
   prev_compiled_at?: string | null;
+}
+
+export interface CompilePageEntry {
+  page_id: string | null;
+  title: string | null;
+  url: string | null;
+  source_name: string | null;
+  status: "compiled" | "not_relevant" | "discarded" | "failed" | "skipped" | "running" | "pending";
+  reason: string | null;
+  compiled_at: string | null;
+}
+
+export interface CompileSessionDetail {
+  session_id: string;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
+  brief_text: string | null;
+  totals: {
+    compiled: number;
+    not_relevant: number;
+    discarded: number;
+    failed: number;
+  };
+  pages: CompilePageEntry[];
 }
